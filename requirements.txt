@@ -1,0 +1,23 @@
+# LiveKit Agents SDK and plugins (v1.3.x - Dec 2024)
+# All plugins require livekit-agents>=1.3.6
+livekit-agents==1.3.6
+livekit-plugins-openai==1.3.6
+livekit-plugins-deepgram==1.3.6
+livekit-plugins-elevenlabs==1.3.6
+livekit-plugins-silero==1.3.6
+
+# Configuration and HTTP
+pydantic==2.10.3
+pydantic-settings==2.6.1
+httpx==0.28.1
+
+# Testing
+pytest==8.3.4
+pytest-asyncio==0.24.0
+pytest-cov==6.0.0
+hypothesis==6.122.3
+
+# Development tools
+ruff==0.8.3
+mypy==1.13.0
+python-dotenv==1.0.1
