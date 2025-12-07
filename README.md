@@ -1,171 +1,173 @@
-# Voice Agent MVP
+# 🎙️ Voice Agent
 
-Голосовой AI-агент на базе LiveKit Agents SDK для обработки входящих телефонных звонков.
+AI-powered voice agent for handling phone calls using LiveKit, with Russian language support.
 
-## Возможности
+![Python](https://img.shields.io/badge/Python-3.11+-blue?logo=python&logoColor=white)
+![LiveKit](https://img.shields.io/badge/LiveKit-Agents-purple?logo=webrtc&logoColor=white)
+![License](https://img.shields.io/badge/License-MIT-green)
 
-- Приём входящих звонков через SIP (МТС Exolve)
-- Распознавание речи (Deepgram Nova-3)
-- Генерация ответов (OpenAI GPT-4o-mini через CometAPI)
-- Синтез речи (ElevenLabs)
-- Определение голосовой активности (Silero VAD)
-- Автоматическое завершение при тишине
-- Обработка прерываний пользователем
+## ✨ Features
 
-## Быстрый старт
+- 🗣️ **Voice Recognition** — Deepgram Nova-3 with Russian language support
+- 🤖 **AI Conversations** — OpenAI GPT-4o-mini for natural dialogue
+- 🔊 **Text-to-Speech** — ElevenLabs for high-quality voice synthesis
+- 📞 **SIP Telephony** — LiveKit SIP for phone call integration
+- ⏱️ **Smart Timeouts** — Automatic call termination on prolonged silence
+- 🎯 **Interruption Handling** — Natural conversation flow with barge-in support
 
-### 1. Установка зависимостей
+## 🏗️ Architecture
+
+```
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│   Phone/SIP     │────▶│    LiveKit      │────▶│   Voice Agent   │
+│   (Exolve)      │◀────│    Server       │◀────│   (Python)      │
+└─────────────────┘     └─────────────────┘     └─────────────────┘
+                                                        │
+                        ┌───────────────────────────────┼───────────────────────────────┐
+                        │                               │                               │
+                        ▼                               ▼                               ▼
+                ┌───────────────┐              ┌───────────────┐              ┌───────────────┐
+                │   Deepgram    │              │    OpenAI     │              │  ElevenLabs   │
+                │   STT         │              │    LLM        │              │    TTS        │
+                └───────────────┘              └───────────────┘              └───────────────┘
+```
+
+## 🚀 Quick Start
+
+### Prerequisites
+
+- Python 3.11+
+- LiveKit Cloud account
+- API keys: Deepgram, OpenAI (or compatible), ElevenLabs
+
+### Installation
 
 ```bash
+# Clone the repository
+git clone https://github.com/YuriyZhabov/voice-agent.git
+cd voice-agent
+
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate  # Linux/Mac
+# or
+.\venv\Scripts\activate   # Windows
+
+# Install dependencies
 pip install -r requirements.txt
 ```
 
-### 2. Настройка окружения
+### Configuration
 
 ```bash
+# Copy example environment file
 cp .env.example .env
-# Заполните .env своими API ключами
+
+# Edit .env with your API keys
 ```
 
-### 3. Проверка API
+Required environment variables:
+
+| Variable | Description |
+|----------|-------------|
+| `LIVEKIT_URL` | LiveKit server URL |
+| `LIVEKIT_API_KEY` | LiveKit API key |
+| `LIVEKIT_API_SECRET` | LiveKit API secret |
+| `DEEPGRAM_API_KEY` | Deepgram API key |
+| `OPENAI_API_KEY` | OpenAI API key |
+| `ELEVEN_API_KEY` | ElevenLabs API key |
+
+### Running the Agent
 
 ```bash
-python -m agent.api_health
-```
-
-### 4. Запуск агента
-
-```bash
+# Development mode with hot reload
 python -m agent.main dev
+
+# Production mode
+python -m agent.main start
 ```
 
-## Переменные окружения
-
-### LiveKit (обязательно)
-| Переменная | Описание |
-|------------|----------|
-| `LIVEKIT_URL` | WebSocket URL проекта LiveKit |
-| `LIVEKIT_API_KEY` | API ключ LiveKit |
-| `LIVEKIT_API_SECRET` | API секрет LiveKit |
-
-### STT - Deepgram (обязательно)
-| Переменная | Описание |
-|------------|----------|
-| `DEEPGRAM_API_KEY` | API ключ Deepgram |
-
-### LLM - OpenAI (обязательно)
-| Переменная | Описание | По умолчанию |
-|------------|----------|--------------|
-| `OPENAI_API_KEY` | API ключ OpenAI/CometAPI | - |
-| `OPENAI_BASE_URL` | Base URL API | `https://api.openai.com/v1` |
-| `OPENAI_MODEL` | Модель LLM | `gpt-4o-mini` |
-
-### TTS - ElevenLabs (обязательно)
-| Переменная | Описание |
-|------------|----------|
-| `ELEVEN_API_KEY` | API ключ ElevenLabs |
-| `ELEVENLABS_VOICE_ID` | ID голоса |
-
-### SIP Телефония (опционально)
-| Переменная | Описание |
-|------------|----------|
-| `SIP_TRUNK_ID` | ID SIP trunk в LiveKit |
-| `SIP_PHONE_NUMBER` | Номер телефона |
-| `AGENT_NAME` | Имя агента для dispatch |
-
-### МТС Exolve (опционально)
-| Переменная | Описание |
-|------------|----------|
-| `EXOLVE_API_KEY` | API ключ Exolve |
-| `EXOLVE_SIP_RESOURCE_ID` | ID SIP ресурса |
-| `EXOLVE_PHONE_NUMBER` | Номер телефона |
-| `EXOLVE_SIP_USERNAME` | SIP username |
-| `EXOLVE_SIP_DOMAIN` | SIP домен |
-
-### Таймауты
-| Переменная | Описание | По умолчанию |
-|------------|----------|--------------|
-| `SILENCE_TIMEOUT_SECONDS` | Таймаут тишины | `60` |
-| `TOOL_TIMEOUT_SECONDS` | Таймаут инструментов | `30` |
-
-## Настройка SIP телефонии
-
-### LiveKit SIP
-
-1. Получите SIP URI в настройках проекта LiveKit Cloud
-2. Создайте Inbound Trunk:
-   ```bash
-   python -m agent.sip_setup --create-trunk "MTS Exolve" "+79587401087"
-   ```
-3. Создайте Dispatch Rule:
-   ```bash
-   python -m agent.sip_setup --create-rule "voice-agent-mvp"
-   ```
-4. Проверьте конфигурацию:
-   ```bash
-   python -m agent.sip_setup --list
-   ```
-
-### МТС Exolve
-
-1. Зарегистрируйтесь на https://dev.exolve.ru
-2. Получите API ключ
-3. **Важно**: Для переадресации на внешний SIP требуется подписание договора
-4. После подписания договора настройте переадресацию на LiveKit SIP URI
-
-## Тестирование
-
-### Запуск unit-тестов
+### Testing via WebRTC
 
 ```bash
+# Generate test room link
+python -m agent.test_webrtc
+
+# Open the link in browser and start talking!
+```
+
+## 📁 Project Structure
+
+```
+voice-agent/
+├── agent/
+│   ├── main.py          # Agent entry point
+│   ├── config.py        # Pydantic configuration
+│   ├── context.py       # Conversation context manager
+│   ├── logger.py        # Call logging
+│   ├── sip_setup.py     # SIP trunk management
+│   └── test_webrtc.py   # WebRTC testing utility
+├── tests/               # Unit tests
+├── .env.example         # Environment template
+├── requirements.txt     # Dependencies
+└── pyproject.toml       # Project metadata
+```
+
+## 🔧 Configuration Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `AGENT_NAME` | `voice-agent-mvp` | Agent identifier for dispatch |
+| `OPENAI_MODEL` | `gpt-4o-mini` | LLM model to use |
+| `ELEVENLABS_VOICE_ID` | `21m00Tcm4TlvDq8ikWAM` | Voice for TTS |
+| `SILENCE_TIMEOUT_SECONDS` | `30` | Seconds before timeout |
+| `MAX_CONTEXT_MESSAGES` | `20` | Conversation history limit |
+
+## 📞 SIP Telephony Setup
+
+For phone call integration with MTS Exolve:
+
+1. Create LiveKit SIP trunks:
+```bash
+python -m agent.sip_setup --create-inbound --name "Inbound" --number "+7XXXXXXXXXX"
+python -m agent.sip_setup --create-dispatch --name "Dispatch" --prefix "call-"
+```
+
+2. Configure Exolve forwarding to LiveKit SIP URI
+
+3. Test outbound calls:
+```bash
+python -m agent.test_call +79001234567
+```
+
+## 🧪 Testing
+
+```bash
+# Run all tests
 pytest tests/ -v
+
+# Run with coverage
+pytest tests/ --cov=agent --cov-report=html
 ```
 
-### Тестирование голосового агента
+## 🛣️ Roadmap
 
-#### Вариант 1: Исходящий звонок (SIP Outbound)
+- [x] Voice agent MVP
+- [x] WebRTC testing
+- [x] SIP telephony configuration
+- [ ] n8n integration for dynamic tools
+- [ ] Warm transfer to human operators
+- [ ] RAG knowledge base
+- [ ] Multi-agent handoff
 
-1. Создайте Outbound Trunk (если ещё не создан):
-   ```bash
-   python -m agent.sip_setup --create-outbound --name "MTS Exolve Outbound" \
-     --address "sip.exolve.ru" --number "+79587401087" \
-     --username "883140776944348" --password "YOUR_PASSWORD"
-   ```
+## 📄 License
 
-2. Запустите агента в первом терминале:
-   ```bash
-   python -m agent.main dev
-   ```
+MIT License — see [LICENSE](LICENSE) for details.
 
-3. Сделайте тестовый звонок во втором терминале:
-   ```bash
-   python -m agent.test_call +79001234567
-   ```
+## 🤝 Contributing
 
-#### Вариант 2: LiveKit Playground
+Contributions are welcome! Please feel free to submit a Pull Request.
 
-1. Запустите агента:
-   ```bash
-   python -m agent.main dev
-   ```
+---
 
-2. Откройте [LiveKit Playground](https://cloud.livekit.io)
-3. Подключитесь к комнате с именем `call-test`
-4. Агент автоматически подключится и начнёт разговор
-
-## Архитектура
-
-```
-agent/
-├── main.py          # Точка входа, LiveKit Agent
-├── config.py        # Конфигурация (Pydantic)
-├── context.py       # Управление контекстом разговора
-├── logger.py        # Структурированное логирование
-├── api_health.py    # Проверка доступности API
-├── sip_setup.py     # Утилиты настройки SIP
-└── exolve_setup.py  # Утилиты настройки Exolve
-```
-
-## Лицензия
-
-MIT
+Built with ❤️ using [LiveKit Agents](https://docs.livekit.io/agents/)
