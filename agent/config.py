@@ -51,7 +51,13 @@ class AgentConfig(BaseSettings):
     # LLM Provider Selection
     llm_provider: str = Field(
         default="openai",
-        description="LLM provider: 'groq' or 'openai'",
+        description="LLM provider: 'inference' (LiveKit), 'groq', or 'openai'",
+    )
+    
+    # LLM - LiveKit Inference (recommended for lowest latency)
+    inference_model: str = Field(
+        default="openai/gpt-4.1-mini",
+        description="LiveKit Inference model ID (e.g., openai/gpt-4.1-mini, moonshotai/kimi-k2-instruct)",
     )
     
     # LLM - OpenAI-compatible API (required if llm_provider=openai)
