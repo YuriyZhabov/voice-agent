@@ -8,6 +8,7 @@ Requirements: 1.1, 1.2, 2.1, 2.2, 3.2, 1.4, 3.4
 
 import asyncio
 import time
+from dataclasses import dataclass, field
 
 from dotenv import load_dotenv
 from livekit import api
@@ -16,6 +17,84 @@ from livekit.plugins import deepgram, elevenlabs, openai, silero
 
 from agent.config import load_config
 from agent.logger import CallLogger
+
+
+@dataclass
+class LatencyMetrics:
+    """Track latency metrics for the voice pipeline."""
+    
+    # Timestamps
+    user_speech_end: float = 0.0
+    stt_complete: float = 0.0
+    llm_first_token: float = 0.0
+    llm_complete: float = 0.0
+    tts_first_audio: float = 0.0
+    
+    # Calculated latencies (ms)
+    stt_latency_ms: float = 0.0
+    llm_ttft_ms: float = 0.0  # Time to first token
+    llm_total_ms: float = 0.0
+    tts_latency_ms: float = 0.0
+    total_latency_ms: float = 0.0  # User stops speaking → Agent starts speaking
+    
+    # Aggregates
+    turn_count: int = 0
+    latencies: list = field(default_factory=list)
+    
+    def start_turn(self):
+        """Mark start of a new turn (user stopped speaking)."""
+        self.user_speech_end = time.time()
+    
+    def mark_stt_complete(self):
+        """Mark STT transcription complete."""
+        self.stt_complete = time.time()
+        if self.user_speech_end > 0:
+            self.stt_latency_ms = (self.stt_complete - self.user_speech_end) * 1000
+    
+    def mark_llm_first_token(self):
+        """Mark first LLM token received."""
+        self.llm_first_token = time.time()
+        if self.stt_complete > 0:
+            self.llm_ttft_ms = (self.llm_first_token - self.stt_complete) * 1000
+    
+    def mark_llm_complete(self):
+        """Mark LLM response complete."""
+        self.llm_complete = time.time()
+        if self.stt_complete > 0:
+            self.llm_total_ms = (self.llm_complete - self.stt_complete) * 1000
+    
+    def mark_tts_first_audio(self):
+        """Mark first TTS audio chunk (agent starts speaking)."""
+        self.tts_first_audio = time.time()
+        if self.llm_first_token > 0:
+            self.tts_latency_ms = (self.tts_first_audio - self.llm_first_token) * 1000
+        if self.user_speech_end > 0:
+            self.total_latency_ms = (self.tts_first_audio - self.user_speech_end) * 1000
+            self.latencies.append(self.total_latency_ms)
+            self.turn_count += 1
+    
+    def get_current_turn_metrics(self) -> dict:
+        """Get metrics for current turn."""
+        return {
+            "stt_ms": round(self.stt_latency_ms, 1),
+            "llm_ttft_ms": round(self.llm_ttft_ms, 1),
+            "llm_total_ms": round(self.llm_total_ms, 1),
+            "tts_ms": round(self.tts_latency_ms, 1),
+            "total_ms": round(self.total_latency_ms, 1),
+        }
+    
+    def get_summary(self) -> dict:
+        """Get summary metrics for the call."""
+        if not self.latencies:
+            return {"turn_count": 0}
+        
+        return {
+            "turn_count": self.turn_count,
+            "avg_latency_ms": round(sum(self.latencies) / len(self.latencies), 1),
+            "min_latency_ms": round(min(self.latencies), 1),
+            "max_latency_ms": round(max(self.latencies), 1),
+            "p50_latency_ms": round(sorted(self.latencies)[len(self.latencies) // 2], 1),
+        }
 
 # Load environment variables
 load_dotenv()
@@ -150,6 +229,9 @@ async def entrypoint(ctx: JobContext):
         
         return "Звонок будет завершён после прощания."
     
+    # Initialize latency metrics
+    metrics = LatencyMetrics()
+    
     try:
         # Create the agent with system prompt and tools
         agent = Agent(
@@ -171,26 +253,25 @@ async def entrypoint(ctx: JobContext):
             tts=elevenlabs.TTS(voice_id=config.elevenlabs_voice_id),
         )
         
-        # Set up event handlers for silence monitoring and interruption handling
+        # Set up event handlers for silence monitoring, interruption handling, and latency tracking
         @agent_session.on("user_started_speaking")
         def on_user_started_speaking():
-            """Reset silence timer when user starts speaking.
-            
-            Note: LiveKit Agents SDK automatically handles interruptions -
-            when user speaks during agent response, TTS playback stops.
-            """
+            """Reset silence timer when user starts speaking."""
             silence_monitor.reset()
             logger.log_event("user_started_speaking", {})
         
         @agent_session.on("user_stopped_speaking")
         def on_user_stopped_speaking():
-            """Log when user stops speaking."""
+            """Log when user stops speaking and start latency tracking."""
+            metrics.start_turn()
             logger.log_event("user_stopped_speaking", {})
         
         @agent_session.on("agent_started_speaking")
         def on_agent_started_speaking():
-            """Log when agent starts speaking."""
-            logger.log_event("agent_started_speaking", {})
+            """Log when agent starts speaking and record total latency."""
+            metrics.mark_tts_first_audio()
+            turn_metrics = metrics.get_current_turn_metrics()
+            logger.log_event("agent_started_speaking", {"latency": turn_metrics})
         
         @agent_session.on("agent_stopped_speaking")
         def on_agent_stopped_speaking():
@@ -199,8 +280,9 @@ async def entrypoint(ctx: JobContext):
         
         @agent_session.on("user_input_transcribed")
         def on_user_input_transcribed(transcript):
-            """Reset silence timer when user speech is transcribed."""
+            """Reset silence timer and mark STT complete."""
             silence_monitor.reset()
+            metrics.mark_stt_complete()
             logger.log_event("user_input_transcribed", {"transcript": str(transcript)[:100]})
         
         # Error handling events
@@ -260,6 +342,10 @@ async def entrypoint(ctx: JobContext):
     finally:
         # Cleanup resources
         await silence_monitor.stop()
+        
+        # Log latency summary
+        latency_summary = metrics.get_summary()
+        logger.log_event("latency_summary", latency_summary)
         logger.log_event("call_cleanup", {"room": room_name})
         logger.log_summary()
 
