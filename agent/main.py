@@ -288,39 +288,70 @@ async def entrypoint(ctx: JobContext):
         # LiveKit SDK built-in metrics (most accurate)
         usage_collector = metrics.UsageCollector()
         
+        # Store detailed metrics for each turn
+        turn_metrics_list: list[dict] = []
+        
         @agent_session.on("metrics_collected")
         def on_metrics_collected(ev: MetricsCollectedEvent):
             """Collect and log LiveKit SDK metrics."""
             usage_collector.collect(ev.metrics)
             
-            # Log individual metrics
+            # Also use built-in logging
+            metrics.log_metrics(ev.metrics)
+            
+            # Log individual metrics with our logger too
             for m in ev.metrics:
                 metric_type = type(m).__name__
                 if metric_type == "LLMMetrics":
-                    logger.log_event("llm_metrics", {
+                    turn_data = {
+                        "type": "llm",
                         "ttft_ms": round(m.ttft * 1000, 1),
                         "duration_ms": round(m.duration * 1000, 1),
                         "tokens_per_sec": round(m.tokens_per_second, 1),
                         "prompt_tokens": m.prompt_tokens,
                         "completion_tokens": m.completion_tokens,
-                    })
+                    }
+                    turn_metrics_list.append(turn_data)
+                    logger.log_event("llm_metrics", turn_data)
                 elif metric_type == "TTSMetrics":
-                    logger.log_event("tts_metrics", {
+                    turn_data = {
+                        "type": "tts",
                         "ttfb_ms": round(m.ttfb * 1000, 1),
                         "duration_ms": round(m.duration * 1000, 1),
                         "audio_duration_s": round(m.audio_duration, 2),
                         "characters": m.characters_count,
-                    })
+                    }
+                    turn_metrics_list.append(turn_data)
+                    logger.log_event("tts_metrics", turn_data)
                 elif metric_type == "STTMetrics":
-                    logger.log_event("stt_metrics", {
+                    turn_data = {
+                        "type": "stt",
                         "duration_ms": round(m.duration * 1000, 1),
                         "audio_duration_s": round(m.audio_duration, 2),
-                    })
+                    }
+                    turn_metrics_list.append(turn_data)
+                    logger.log_event("stt_metrics", turn_data)
                 elif metric_type == "EOUMetrics":
                     # End of utterance - total latency calculation
-                    logger.log_event("eou_metrics", {
+                    turn_data = {
+                        "type": "eou",
                         "end_of_utterance_delay_ms": round(m.end_of_utterance_delay * 1000, 1),
                         "transcription_delay_ms": round(m.transcription_delay * 1000, 1),
+                    }
+                    turn_metrics_list.append(turn_data)
+                    logger.log_event("eou_metrics", turn_data)
+                    
+                    # Calculate and log total latency for this turn
+                    # Find matching LLM and TTS metrics
+                    llm_ttft = next((x["ttft_ms"] for x in turn_metrics_list if x.get("type") == "llm"), 0)
+                    tts_ttfb = next((x["ttfb_ms"] for x in turn_metrics_list if x.get("type") == "tts"), 0)
+                    total_latency = turn_data["end_of_utterance_delay_ms"] + llm_ttft + tts_ttfb
+                    
+                    logger.log_event("turn_latency", {
+                        "eou_delay_ms": turn_data["end_of_utterance_delay_ms"],
+                        "llm_ttft_ms": llm_ttft,
+                        "tts_ttfb_ms": tts_ttfb,
+                        "total_latency_ms": round(total_latency, 1),
                     })
         
         # Error handling events
