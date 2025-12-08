@@ -76,23 +76,58 @@ class ExolveSetup:
     ) -> dict:
         """Set call forwarding to external SIP URI.
         
-        Uses call_forwarding_type: CALL_FORWARDING_TYPE_SIP
+        Uses call_forwarding_type: 1 (CALL_FORWARDING_TYPE_SIP)
         and call_forwarding_sip with sip_uri field.
+        
+        Format: sip_uri should be "user@domain" or "+phone@domain"
         
         Args:
             number: Phone number without + (e.g., 79587401087)
-            sip_uri: External SIP URI (e.g., user@domain.com)
+            sip_uri: External SIP URI (e.g., +79587401087@domain.sip.livekit.cloud)
         """
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
                 f"{self.base_url}/number/v1/SetCallForwarding",
                 headers=self.headers,
                 json={
-                    "number_code": str(number),  # String format
-                    "call_forwarding_type": 1,  # 1 = SIP
+                    "number_code": number,  # uint64 format per API docs
+                    "call_forwarding_type": 1,  # 1 = external SIP
                     "call_forwarding_sip": {
                         "sip_uri": sip_uri,
                     },
+                },
+            )
+            response.raise_for_status()
+            return response.json()
+    
+    async def get_call_forwarding(self, number: int) -> dict:
+        """Get current call forwarding settings for a number.
+        
+        Args:
+            number: Phone number without + (e.g., 79587401087)
+        """
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{self.base_url}/number/v1/GetCallForwarding",
+                headers=self.headers,
+                json={"number_code": number},
+            )
+            response.raise_for_status()
+            return response.json()
+    
+    async def clear_call_forwarding(self, number: int) -> dict:
+        """Clear call forwarding settings for a number.
+        
+        Args:
+            number: Phone number without + (e.g., 79587401087)
+        """
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{self.base_url}/number/v1/SetCallForwarding",
+                headers=self.headers,
+                json={
+                    "number_code": number,
+                    "call_forwarding_type": 0,  # 0 = disabled
                 },
             )
             response.raise_for_status()
@@ -170,14 +205,19 @@ Examples:
   python -m agent.exolve_setup --info
   python -m agent.exolve_setup --sip-list
   python -m agent.exolve_setup --sip-attributes
-  python -m agent.exolve_setup --set-destination
+  python -m agent.exolve_setup --get-forwarding
+  python -m agent.exolve_setup --set-forwarding
+  python -m agent.exolve_setup --clear-forwarding
         """,
     )
     parser.add_argument("--info", action="store_true", help="Get number info")
     parser.add_argument("--numbers", action="store_true", help="List phone numbers")
     parser.add_argument("--sip-list", action="store_true", help="List SIP resources")
     parser.add_argument("--sip-attributes", action="store_true", help="Get SIP attributes")
-    parser.add_argument("--set-destination", action="store_true", help="Set SIP destination to LiveKit")
+    parser.add_argument("--set-destination", action="store_true", help="Set SIP destination to LiveKit (deprecated)")
+    parser.add_argument("--get-forwarding", action="store_true", help="Get current call forwarding settings")
+    parser.add_argument("--set-forwarding", action="store_true", help="Set call forwarding to LiveKit SIP")
+    parser.add_argument("--clear-forwarding", action="store_true", help="Clear call forwarding")
     args = parser.parse_args()
     
     config = load_config()
@@ -228,27 +268,48 @@ Examples:
         except httpx.HTTPStatusError as e:
             print(f"Error: {e.response.status_code} - {e.response.text}")
     
-    if args.set_destination:
+    if args.get_forwarding:
+        if not config.exolve_phone_number:
+            print("Error: EXOLVE_PHONE_NUMBER not configured")
+            return
+        number = int(config.exolve_phone_number.replace("+", ""))
+        print(f"\nGetting call forwarding for {number}:")
+        try:
+            result = await setup.get_call_forwarding(number)
+            print(f"  Result: {result}")
+        except httpx.HTTPStatusError as e:
+            print(f"Error: {e.response.status_code} - {e.response.text}")
+    
+    if args.clear_forwarding:
+        if not config.exolve_phone_number:
+            print("Error: EXOLVE_PHONE_NUMBER not configured")
+            return
+        number = int(config.exolve_phone_number.replace("+", ""))
+        print(f"\nClearing call forwarding for {number}:")
+        try:
+            result = await setup.clear_call_forwarding(number)
+            print(f"Success! Result: {result}")
+        except httpx.HTTPStatusError as e:
+            print(f"Error: {e.response.status_code} - {e.response.text}")
+    
+    if args.set_forwarding or args.set_destination:
         if not config.exolve_phone_number:
             print("Error: EXOLVE_PHONE_NUMBER not configured")
             return
         
-        # Get LiveKit SIP URI
-        livekit_sip_uri = "sip:5o0nn71q1ga.sip.livekit.cloud"
         number = int(config.exolve_phone_number.replace("+", ""))
         
-        # SIP URI format for Exolve: user@domain (without sip: prefix)
-        sip_uri_clean = livekit_sip_uri.replace("sip:", "")
+        # LiveKit SIP URI format: +phone@livekit-sip-domain
+        # The phone number in the URI helps LiveKit route to the correct trunk
+        livekit_domain = "5o0nn71q1ga.sip.livekit.cloud"
+        sip_uri = f"+{number}@{livekit_domain}"
         
         print(f"\nSetting call forwarding via SetCallForwarding API:")
         print(f"  Number: {number}")
-        print(f"  Destination SIP URI: {sip_uri_clean}")
+        print(f"  Destination SIP URI: {sip_uri}")
         
         try:
-            result = await setup.set_call_forwarding_to_sip_uri(
-                number,
-                sip_uri_clean,
-            )
+            result = await setup.set_call_forwarding_to_sip_uri(number, sip_uri)
             print(f"Success! Result: {result}")
         except httpx.HTTPStatusError as e:
             print(f"Error: {e.response.status_code} - {e.response.text}")
