@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from dotenv import load_dotenv
 from livekit import api
 from livekit.agents import Agent, AgentServer, AgentSession, JobContext, RunContext, get_job_context, function_tool, metrics, MetricsCollectedEvent
-from livekit.plugins import deepgram, elevenlabs, openai, silero
+from livekit.plugins import deepgram, elevenlabs, groq, openai, silero
 
 from agent.config import load_config
 from agent.logger import CallLogger
@@ -239,6 +239,17 @@ async def entrypoint(ctx: JobContext):
             tools=[end_call],
         )
 
+        # Select LLM based on provider config
+        if config.llm_provider == "groq":
+            llm_instance = groq.LLM(model=config.groq_model)
+            logger.log_event("llm_provider", {"provider": "groq", "model": config.groq_model})
+        else:
+            llm_instance = openai.LLM(
+                model=config.openai_model,
+                base_url=config.openai_base_url,
+            )
+            logger.log_event("llm_provider", {"provider": "openai", "model": config.openai_model})
+        
         # Create the agent session with voice pipeline
         agent_session = AgentSession(
             vad=silero.VAD.load(),
@@ -246,10 +257,7 @@ async def entrypoint(ctx: JobContext):
                 model="nova-3",
                 language="ru",  # Russian language
             ),
-            llm=openai.LLM(
-                model=config.openai_model,
-                base_url=config.openai_base_url,
-            ),
+            llm=llm_instance,
             tts=elevenlabs.TTS(voice_id=config.elevenlabs_voice_id),
         )
         

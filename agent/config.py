@@ -48,9 +48,15 @@ class AgentConfig(BaseSettings):
         description="Deepgram API key for speech-to-text",
     )
     
-    # LLM - OpenAI-compatible API (required)
+    # LLM Provider Selection
+    llm_provider: str = Field(
+        default="openai",
+        description="LLM provider: 'groq' or 'openai'",
+    )
+    
+    # LLM - OpenAI-compatible API (required if llm_provider=openai)
     openai_api_key: str = Field(
-        ...,
+        default="",
         description="OpenAI-compatible API key (e.g., CometAPI)",
     )
     openai_base_url: str = Field(
@@ -61,6 +67,16 @@ class AgentConfig(BaseSettings):
     openai_model: str = Field(
         default="gpt-4o-mini",
         description="Model to use (e.g., gpt-4o-mini)",
+    )
+    
+    # LLM - Groq (required if llm_provider=groq)
+    groq_api_key: str = Field(
+        default="",
+        description="Groq API key for fast LLM inference",
+    )
+    groq_model: str = Field(
+        default="llama-3.3-70b-versatile",
+        description="Groq model to use",
     )
 
     # TTS - ElevenLabs (required) - Requirements: 5.2
