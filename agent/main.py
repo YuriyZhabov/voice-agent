@@ -265,7 +265,11 @@ async def entrypoint(ctx: JobContext):
                 language="ru",  # Russian language
             ),
             llm=llm_instance,
-            tts=elevenlabs.TTS(voice_id=config.elevenlabs_voice_id),
+            tts=elevenlabs.TTS(
+                voice_id=config.elevenlabs_voice_id,
+                model="eleven_multilingual_v2",  # Required for Russian language
+                language="ru",
+            ),
         )
         
         # Set up event handlers for silence monitoring, interruption handling, and latency tracking

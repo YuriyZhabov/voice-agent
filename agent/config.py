@@ -155,9 +155,14 @@ class AgentConfig(BaseSettings):
     @field_validator("livekit_url")
     @classmethod
     def validate_livekit_url(cls, v: str) -> str:
-        """Validate LiveKit URL starts with wss:// or ws://."""
+        """Validate and normalize LiveKit URL."""
+        # LiveKit Cloud may pass https:// URL, convert to wss://
+        if v.startswith("https://"):
+            v = v.replace("https://", "wss://")
+        elif v.startswith("http://"):
+            v = v.replace("http://", "ws://")
         if not v.startswith(("wss://", "ws://")):
-            raise ValueError("LiveKit URL must start with wss:// or ws://")
+            raise ValueError("LiveKit URL must start with wss://, ws://, https://, or http://")
         return v
     
     @field_validator("n8n_mcp_url")
