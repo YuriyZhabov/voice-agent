@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 
 from dotenv import load_dotenv
 from livekit import api
-from livekit.agents import Agent, AgentServer, AgentSession, JobContext, RunContext, get_job_context, function_tool
+from livekit.agents import Agent, AgentServer, AgentSession, JobContext, RunContext, get_job_context, function_tool, metrics, MetricsCollectedEvent
 from livekit.plugins import deepgram, elevenlabs, openai, silero
 
 from agent.config import load_config
@@ -230,7 +230,7 @@ async def entrypoint(ctx: JobContext):
         return "Звонок будет завершён после прощания."
     
     # Initialize latency metrics
-    metrics = LatencyMetrics()
+    latency_metrics = LatencyMetrics()
     
     try:
         # Create the agent with system prompt and tools
@@ -263,14 +263,14 @@ async def entrypoint(ctx: JobContext):
         @agent_session.on("user_stopped_speaking")
         def on_user_stopped_speaking():
             """Log when user stops speaking and start latency tracking."""
-            metrics.start_turn()
+            latency_metrics.start_turn()
             logger.log_event("user_stopped_speaking", {})
         
         @agent_session.on("agent_started_speaking")
         def on_agent_started_speaking():
             """Log when agent starts speaking and record total latency."""
-            metrics.mark_tts_first_audio()
-            turn_metrics = metrics.get_current_turn_metrics()
+            latency_metrics.mark_tts_first_audio()
+            turn_metrics = latency_metrics.get_current_turn_metrics()
             logger.log_event("agent_started_speaking", {"latency": turn_metrics})
         
         @agent_session.on("agent_stopped_speaking")
@@ -282,8 +282,46 @@ async def entrypoint(ctx: JobContext):
         def on_user_input_transcribed(transcript):
             """Reset silence timer and mark STT complete."""
             silence_monitor.reset()
-            metrics.mark_stt_complete()
+            latency_metrics.mark_stt_complete()
             logger.log_event("user_input_transcribed", {"transcript": str(transcript)[:100]})
+        
+        # LiveKit SDK built-in metrics (most accurate)
+        usage_collector = metrics.UsageCollector()
+        
+        @agent_session.on("metrics_collected")
+        def on_metrics_collected(ev: MetricsCollectedEvent):
+            """Collect and log LiveKit SDK metrics."""
+            usage_collector.collect(ev.metrics)
+            
+            # Log individual metrics
+            for m in ev.metrics:
+                metric_type = type(m).__name__
+                if metric_type == "LLMMetrics":
+                    logger.log_event("llm_metrics", {
+                        "ttft_ms": round(m.ttft * 1000, 1),
+                        "duration_ms": round(m.duration * 1000, 1),
+                        "tokens_per_sec": round(m.tokens_per_second, 1),
+                        "prompt_tokens": m.prompt_tokens,
+                        "completion_tokens": m.completion_tokens,
+                    })
+                elif metric_type == "TTSMetrics":
+                    logger.log_event("tts_metrics", {
+                        "ttfb_ms": round(m.ttfb * 1000, 1),
+                        "duration_ms": round(m.duration * 1000, 1),
+                        "audio_duration_s": round(m.audio_duration, 2),
+                        "characters": m.characters_count,
+                    })
+                elif metric_type == "STTMetrics":
+                    logger.log_event("stt_metrics", {
+                        "duration_ms": round(m.duration * 1000, 1),
+                        "audio_duration_s": round(m.audio_duration, 2),
+                    })
+                elif metric_type == "EOUMetrics":
+                    # End of utterance - total latency calculation
+                    logger.log_event("eou_metrics", {
+                        "end_of_utterance_delay_ms": round(m.end_of_utterance_delay * 1000, 1),
+                        "transcription_delay_ms": round(m.transcription_delay * 1000, 1),
+                    })
         
         # Error handling events
         @agent_session.on("error")
@@ -344,8 +382,21 @@ async def entrypoint(ctx: JobContext):
         await silence_monitor.stop()
         
         # Log latency summary
-        latency_summary = metrics.get_summary()
+        latency_summary = latency_metrics.get_summary()
         logger.log_event("latency_summary", latency_summary)
+        
+        # Log usage summary from LiveKit SDK
+        try:
+            usage_summary = usage_collector.get_summary()
+            logger.log_event("usage_summary", {
+                "llm_prompt_tokens": usage_summary.llm_prompt_tokens,
+                "llm_completion_tokens": usage_summary.llm_completion_tokens,
+                "tts_characters": usage_summary.tts_characters_count,
+                "stt_audio_duration_s": round(usage_summary.stt_audio_duration, 2),
+            })
+        except Exception:
+            pass  # Usage collector may not have data
+        
         logger.log_event("call_cleanup", {"room": room_name})
         logger.log_summary()
 
