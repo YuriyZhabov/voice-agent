@@ -267,8 +267,8 @@ async def entrypoint(ctx: JobContext):
             llm=llm_instance,
             tts=elevenlabs.TTS(
                 voice_id=config.elevenlabs_voice_id,
-                model="eleven_multilingual_v2",  # Required for Russian language
-                language="ru",
+                model="eleven_turbo_v2_5",  # Supports language parameter
+                language="ru",  # Russian language
             ),
         )
         
