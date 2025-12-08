@@ -150,11 +150,30 @@ pytest tests/ -v
 pytest tests/ --cov=agent --cov-report=html
 ```
 
+## �  Archon Integration
+
+This project includes integration with [Archon](https://github.com/coleam00/archon) for AI agent management.
+
+### CometAPI LLM Wrapper
+
+```python
+from archon.cometapi_llm import CometapiLLM
+
+llm = CometapiLLM(
+    api_key="your-cometapi-key",
+    api_url="https://api.cometapi.com/v1",
+    model="gpt-4o-mini"
+)
+
+response = llm.invoke("Hello, how are you?")
+```
+
 ## 🛣️ Roadmap
 
 - [x] Voice agent MVP
 - [x] WebRTC testing
 - [x] SIP telephony configuration
+- [x] Archon integration with CometAPI
 - [ ] n8n integration for dynamic tools
 - [ ] Warm transfer to human operators
 - [ ] RAG knowledge base
