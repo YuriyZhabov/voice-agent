@@ -91,11 +91,12 @@ class CallLogger:
             "success": success
         })
     
-    def log_error(self, error: Exception) -> None:
+    def log_error(self, error: Exception, context: dict[str, Any] | None = None) -> None:
         """Log an error with stack trace.
         
         Args:
             error: The exception that occurred
+            context: Optional context data about where/why error occurred
             
         Requirements: 6.3 - WHEN an error occurs THEN the Voice_Agent_MVP 
         SHALL log the error with stack trace and continue operation if possible
@@ -106,6 +107,7 @@ class CallLogger:
             "event": "error",
             "error": str(error),
             "type": type(error).__name__,
+            "context": context or {},
             "stack_trace": traceback.format_exc()
         }
         self.logger.error(json.dumps(error_entry), exc_info=True)

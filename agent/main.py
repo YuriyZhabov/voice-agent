@@ -202,13 +202,16 @@ async def entrypoint(ctx: JobContext):
     
     # Define end_call tool for the agent to use when conversation ends
     @function_tool
-    async def end_call(context: RunContext) -> str:
+    async def end_call(context: RunContext, reason: str = "user_farewell") -> str:
         """End the call gracefully.
         
         Call this function when:
         - The user says goodbye (до свидания, пока, всего хорошего, etc.)
         - The user indicates they want to end the conversation
         - The conversation has naturally concluded
+        
+        Args:
+            reason: Reason for ending the call (e.g., "user_farewell", "task_complete")
         
         Returns:
             Confirmation that the call will be ended.
@@ -218,7 +221,7 @@ async def entrypoint(ctx: JobContext):
             return "Звонок уже завершается."
         call_ending = True
         
-        logger.log_event("initiating_goodbye", {"reason": "user_farewell"})
+        logger.log_event("initiating_goodbye", {"reason": reason})
         
         # Schedule hangup after a short delay to allow farewell message
         async def delayed_hangup():
