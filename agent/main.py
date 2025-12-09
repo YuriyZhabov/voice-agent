@@ -1,7 +1,7 @@
 """Voice Agent MVP - Main entry point.
 
 LiveKit Agents SDK based voice agent for handling incoming SIP calls.
-Uses Deepgram for STT, OpenAI for LLM, ElevenLabs for TTS, and Silero for VAD.
+Uses Deepgram for STT, OpenAI for LLM, Cartesia for TTS, and Silero for VAD.
 
 Requirements: 1.1, 1.2, 2.1, 2.2, 3.2, 1.4, 3.4
 """
@@ -12,11 +12,12 @@ from dataclasses import dataclass, field
 
 from dotenv import load_dotenv
 from livekit import api
-from livekit.agents import Agent, AgentServer, AgentSession, JobContext, RunContext, get_job_context, function_tool, metrics, MetricsCollectedEvent
-from livekit.plugins import cartesia, deepgram, elevenlabs, groq, openai, silero
+from livekit.agents import Agent, AgentServer, AgentSession, JobContext, get_job_context, metrics, MetricsCollectedEvent
+from livekit.plugins import cartesia, deepgram, groq, openai, silero
 
 from agent.config import load_config
 from agent.logger import CallLogger
+from agent.tools import get_all_tools
 
 
 @dataclass
@@ -170,15 +171,14 @@ async def entrypoint(ctx: JobContext):
     logger = CallLogger(call_id=room_name)
     logger.log_event("call_started", {"room": room_name})
     
-    # Track if call is ending
-    call_ending = False
+    # Track if call is ending (will be set in agent userdata after agent creation)
+    call_state = {"ending": False}
     
     async def handle_silence_timeout():
         """Handle silence timeout - say goodbye and hang up."""
-        nonlocal call_ending
-        if call_ending:
+        if call_state["ending"]:
             return
-        call_ending = True
+        call_state["ending"] = True
         
         logger.log_event("initiating_goodbye", {"reason": "silence_timeout"})
         
@@ -200,46 +200,25 @@ async def entrypoint(ctx: JobContext):
         on_timeout=handle_silence_timeout,
     )
     
-    # Define end_call tool for the agent to use when conversation ends
-    @function_tool
-    async def end_call(context: RunContext, reason: str = "user_farewell") -> str:
-        """End the call gracefully.
-        
-        Call this function when:
-        - The user says goodbye (до свидания, пока, всего хорошего, etc.)
-        - The user indicates they want to end the conversation
-        - The conversation has naturally concluded
-        
-        Args:
-            reason: Reason for ending the call (e.g., "user_farewell", "task_complete")
-        
-        Returns:
-            Confirmation that the call will be ended.
-        """
-        nonlocal call_ending
-        if call_ending:
-            return "Звонок уже завершается."
-        call_ending = True
-        
-        logger.log_event("initiating_goodbye", {"reason": reason})
-        
-        # Schedule hangup after a short delay to allow farewell message
-        async def delayed_hangup():
-            await asyncio.sleep(3.0)
-            await hangup_call()
-        
-        asyncio.create_task(delayed_hangup())
-        
-        return "Звонок будет завершён после прощания."
-    
     # Initialize latency metrics
     latency_metrics = LatencyMetrics()
+    
+    # Get all tools from the tools module
+    tools = get_all_tools()
+    logger.log_event("tools_loaded", {"count": len(tools), "names": [t.name for t in tools]})
     
     try:
         # Create the agent with system prompt and tools
         agent = Agent(
-            instructions=config.agent_system_prompt + "\n\nКогда пользователь прощается или хочет завершить разговор, вызови функцию end_call и попрощайся.",
-            tools=[end_call],
+            instructions=config.agent_system_prompt + """
+
+Доступные инструменты:
+- end_call: Вызови когда пользователь прощается или хочет завершить разговор
+- get_current_time: Вызови когда пользователь спрашивает который час
+
+Когда пользователь прощается, вызови end_call и попрощайся.""",
+            tools=tools,
+            userdata={"call_ending": False},  # Shared state for tools
         )
 
         # Select LLM based on provider config
@@ -406,7 +385,8 @@ async def entrypoint(ctx: JobContext):
         
         # Keep the session alive until call ends
         # The agent session handles the conversation loop internally
-        while not call_ending:
+        # Check both local state and agent userdata for call ending
+        while not call_state["ending"] and not agent.userdata.get("call_ending", False):
             await asyncio.sleep(1.0)
         
     except Exception as e:
