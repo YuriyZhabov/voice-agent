@@ -21,16 +21,23 @@ MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 
 
 @function_tool
-async def get_current_time(context: RunContext) -> str:
-    """Get current time in Moscow timezone.
+async def get_current_time(context: RunContext, timezone: str = "Europe/Moscow") -> str:
+    """Get current time in specified timezone.
     
     Call this function when the user asks what time it is.
     Returns the current time formatted in Russian.
     
+    Args:
+        timezone: Timezone name (default: Europe/Moscow)
+    
     Returns:
-        Current time in Moscow timezone in Russian format.
+        Current time in specified timezone in Russian format.
     """
-    now = datetime.now(MOSCOW_TZ)
+    try:
+        tz = ZoneInfo(timezone)
+    except Exception:
+        tz = MOSCOW_TZ
+    now = datetime.now(tz)
     
     # Format time in Russian
     hours = now.hour
