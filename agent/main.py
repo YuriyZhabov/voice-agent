@@ -231,7 +231,6 @@ async def entrypoint(ctx: JobContext):
 Когда пользователь прощается, вызови end_call и попрощайся.""",
             tools=tools,
             mcp_servers=mcp_servers,
-            userdata={"call_ending": False},  # Shared state for tools
         )
 
         # Select LLM based on provider config
@@ -398,8 +397,7 @@ async def entrypoint(ctx: JobContext):
         
         # Keep the session alive until call ends
         # The agent session handles the conversation loop internally
-        # Check both local state and agent userdata for call ending
-        while not call_state["ending"] and not agent.userdata.get("call_ending", False):
+        while not call_state["ending"]:
             await asyncio.sleep(1.0)
         
     except Exception as e:
