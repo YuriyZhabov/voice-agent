@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from dotenv import load_dotenv
 from livekit import api
 from livekit.agents import Agent, AgentServer, AgentSession, JobContext, get_job_context, metrics, MetricsCollectedEvent
+from livekit.agents import mcp
 from livekit.plugins import cartesia, deepgram, groq, openai, silero
 
 from agent.config import load_config
@@ -205,9 +206,20 @@ async def entrypoint(ctx: JobContext):
     
     # Get all tools from the tools module
     tools = get_all_tools()
-    logger.log_event("tools_loaded", {"count": len(tools), "names": [t.name for t in tools]})
+    from agent.tools import _get_tool_name
+    logger.log_event("tools_loaded", {"count": len(tools), "names": [_get_tool_name(t) for t in tools]})
     
     try:
+        # Configure MCP servers if URL is provided
+        mcp_servers = None
+        if config.n8n_mcp_url:
+            try:
+                mcp_servers = [mcp.MCPServerHTTP(config.n8n_mcp_url)]
+                logger.log_event("mcp_configured", {"url": config.n8n_mcp_url})
+            except Exception as e:
+                logger.log_error(e, context={"phase": "mcp_setup"})
+                logger.log_event("mcp_failed", {"url": config.n8n_mcp_url, "error": str(e)})
+        
         # Create the agent with system prompt and tools
         agent = Agent(
             instructions=config.agent_system_prompt + """
@@ -218,6 +230,7 @@ async def entrypoint(ctx: JobContext):
 
 Когда пользователь прощается, вызови end_call и попрощайся.""",
             tools=tools,
+            mcp_servers=mcp_servers,
             userdata={"call_ending": False},  # Shared state for tools
         )
 

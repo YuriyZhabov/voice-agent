@@ -47,4 +47,4 @@ def get_all_tools() -> list["FunctionTool"]:
     return all_tools
 
 
-__all__ = ["get_all_tools"]
+__all__ = ["get_all_tools", "_get_tool_name"]

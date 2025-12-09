@@ -149,3 +149,38 @@ class TestToolNaming:
         
         assert get_tool_info(end_call).name == "end_call"
         assert get_tool_info(get_current_time).name == "get_current_time"
+
+
+class TestToolsMerge:
+    """Tests for tools list merge (Property 5)."""
+    
+    def test_merge_preserves_all_builtin_tools(self):
+        """Merging tools should preserve all built-in tools (Property 5).
+        
+        **Feature: agent-tools, Property 5: Tools list merge preserves all tools**
+        **Validates: Requirements 5.3**
+        """
+        from agent.tools import get_all_tools
+        from agent.tools.core import TOOLS as CORE_TOOLS
+        from agent.tools.time import TOOLS as TIME_TOOLS
+        
+        all_tools = get_all_tools()
+        
+        # All core tools should be in the merged list
+        for tool in CORE_TOOLS:
+            assert tool in all_tools, f"Core tool {tool} not in merged list"
+        
+        # All time tools should be in the merged list
+        for tool in TIME_TOOLS:
+            assert tool in all_tools, f"Time tool {tool} not in merged list"
+    
+    def test_merge_count_equals_sum(self):
+        """Merged tools count should equal sum of all module tools."""
+        from agent.tools import get_all_tools
+        from agent.tools.core import TOOLS as CORE_TOOLS
+        from agent.tools.time import TOOLS as TIME_TOOLS
+        
+        all_tools = get_all_tools()
+        expected_count = len(CORE_TOOLS) + len(TIME_TOOLS)
+        
+        assert len(all_tools) == expected_count
