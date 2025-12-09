@@ -39,17 +39,21 @@ async def get_current_time(context: RunContext, timezone: str = "Europe/Moscow")
         tz = MOSCOW_TZ
     now = datetime.now(tz)
     
-    # Format time in Russian
     hours = now.hour
     minutes = now.minute
     
-    # Russian time format
-    time_str = f"{hours:02d}:{minutes:02d}"
-    date_str = now.strftime("%d.%m.%Y")
+    # Format time for natural speech (TTS-friendly)
+    if minutes == 0:
+        time_str = f"{hours} часов ровно"
+    elif minutes < 10:
+        time_str = f"{hours} часов {minutes} минут"
+    else:
+        time_str = f"{hours} часов {minutes} минут"
     
-    logger.info(f"get_current_time called: {time_str}")
+    logger.info(f"get_current_time called: {hours}:{minutes:02d}")
     
-    return f"Сейчас {time_str} по московскому времени, {date_str}."
+    # Return only time, no date - cleaner for voice
+    return f"Сейчас {time_str} по московскому времени."
 
 
 # Export list of tools from this module

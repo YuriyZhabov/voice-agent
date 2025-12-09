@@ -120,8 +120,8 @@ class TestGetCurrentTimeTool:
         moscow_tz = ZoneInfo("Europe/Moscow")
         now = datetime.now(moscow_tz)
         
-        # Time should be in the result (may differ by a minute)
-        assert ":" in result  # Contains time format
+        # Time should be in the result (TTS-friendly format with "часов" and "минут")
+        assert "часов" in result
     
     @pytest.mark.asyncio
     async def test_get_current_time_format(self):
@@ -133,10 +133,10 @@ class TestGetCurrentTimeTool:
         
         result = await get_current_time(mock_context)
         
-        # Should contain "Сейчас" and time format
+        # Should contain "Сейчас" and TTS-friendly time format
         assert "Сейчас" in result
-        assert ":" in result  # Time separator
-        assert "." in result  # Date separator
+        assert "часов" in result  # TTS-friendly format
+        assert "минут" in result or "ровно" in result  # Minutes or "ровно" for :00
 
 
 class TestToolNaming:
