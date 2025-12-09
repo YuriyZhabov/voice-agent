@@ -222,19 +222,16 @@ async def entrypoint(ctx: JobContext):
             except Exception as e:
                 logger.log_error(e, context={"phase": "n8n_mcp_setup"})
         
-        # Add Smithery MCP servers if configured
-        if config.smithery_api_key and config.smithery_servers:
+        # Add Smithery MCP servers via HTTP (hosted on smithery.ai)
+        if config.smithery_servers:
             for server_name in config.smithery_servers.split(","):
                 server_name = server_name.strip()
                 if server_name:
                     try:
+                        # Use Smithery hosted HTTP endpoint
                         smithery_url = f"https://server.smithery.ai/{server_name}/mcp"
-                        # Smithery requires API key in headers
-                        mcp_servers.append(mcp.MCPServerHTTP(
-                            smithery_url,
-                            headers={"Authorization": f"Bearer {config.smithery_api_key}"}
-                        ))
-                        logger.log_event("mcp_configured", {"type": "smithery", "server": server_name})
+                        mcp_servers.append(mcp.MCPServerHTTP(smithery_url))
+                        logger.log_event("mcp_configured", {"type": "smithery_http", "server": server_name, "url": smithery_url})
                     except Exception as e:
                         logger.log_error(e, context={"phase": "smithery_mcp_setup", "server": server_name})
         
