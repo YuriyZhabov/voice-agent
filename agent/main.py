@@ -222,18 +222,8 @@ async def entrypoint(ctx: JobContext):
             except Exception as e:
                 logger.log_error(e, context={"phase": "n8n_mcp_setup"})
         
-        # Add Smithery MCP servers via HTTP (hosted on smithery.ai)
-        if config.smithery_servers:
-            for server_name in config.smithery_servers.split(","):
-                server_name = server_name.strip()
-                if server_name:
-                    try:
-                        # Use Smithery hosted HTTP endpoint
-                        smithery_url = f"https://server.smithery.ai/{server_name}/mcp"
-                        mcp_servers.append(mcp.MCPServerHTTP(smithery_url))
-                        logger.log_event("mcp_configured", {"type": "smithery_http", "server": server_name, "url": smithery_url})
-                    except Exception as e:
-                        logger.log_error(e, context={"phase": "smithery_mcp_setup", "server": server_name})
+        # Note: Smithery MCP servers require OAuth which is not supported in server-side agents
+        # Weather functionality is provided via built-in get_weather tool instead
         
         # Set to None if no servers configured
         if not mcp_servers:
