@@ -244,7 +244,7 @@ async def entrypoint(ctx: JobContext):
             )
             logger.log_event("llm_provider", {"provider": "openai", "model": config.openai_model})
         
-        # Create the agent session with voice pipeline
+        # Create the agent session with voice pipeline and userdata for state
         agent_session = AgentSession(
             vad=silero.VAD.load(),
             stt=deepgram.STT(
@@ -257,6 +257,7 @@ async def entrypoint(ctx: JobContext):
                 voice=config.cartesia_voice_id,
                 language="ru",
             ),
+            userdata={"call_ending": False, "room_name": room_name},
         )
         
         # Set up event handlers for silence monitoring, interruption handling, and latency tracking
