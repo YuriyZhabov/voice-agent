@@ -79,14 +79,24 @@ class AgentConfig(BaseSettings):
         description="Groq model to use",
     )
 
-    # TTS - ElevenLabs (required) - Requirements: 5.2
+    # TTS - ElevenLabs (optional) - Requirements: 5.2
     eleven_api_key: str = Field(
-        ...,
+        default="",
         description="ElevenLabs API key for text-to-speech",
     )
     elevenlabs_voice_id: str = Field(
         default="alex",
         description="ElevenLabs voice ID to use",
+    )
+    
+    # TTS - Cartesia (optional)
+    cartesia_api_key: str = Field(
+        default="",
+        description="Cartesia API key for text-to-speech",
+    )
+    cartesia_voice_id: str = Field(
+        default="794f9389-aac1-45b6-b726-9d9369183238",
+        description="Cartesia voice ID to use",
     )
     
     # n8n MCP Integration (optional) - Requirements: 5.3

@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from dotenv import load_dotenv
 from livekit import api
 from livekit.agents import Agent, AgentServer, AgentSession, JobContext, RunContext, get_job_context, function_tool, metrics, MetricsCollectedEvent
-from livekit.plugins import deepgram, elevenlabs, groq, openai, silero
+from livekit.plugins import cartesia, deepgram, elevenlabs, groq, openai, silero
 
 from agent.config import load_config
 from agent.logger import CallLogger
@@ -261,7 +261,11 @@ async def entrypoint(ctx: JobContext):
                 language="ru",  # Russian language
             ),
             llm=llm_instance,
-            tts=elevenlabs.TTS(voice_id=config.elevenlabs_voice_id),
+            tts=cartesia.TTS(
+                model="sonic-3",
+                voice=config.cartesia_voice_id,
+                language="ru",
+            ),
         )
         
         # Set up event handlers for silence monitoring, interruption handling, and latency tracking
