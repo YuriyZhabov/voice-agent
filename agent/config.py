@@ -106,6 +106,16 @@ class AgentConfig(BaseSettings):
         examples=["http://localhost:5678/mcp"],
     )
     
+    # Smithery MCP Integration (optional)
+    smithery_api_key: str | None = Field(
+        default=None,
+        description="Smithery API key for MCP server access",
+    )
+    smithery_servers: str | None = Field(
+        default=None,
+        description="Comma-separated list of Smithery server names (e.g., 'exa,@anthropic/brave-search')",
+    )
+    
     # SIP Telephony - LiveKit (optional) - Requirements: 1.1, 1.2
     sip_trunk_id: str | None = Field(
         default=None,

@@ -211,15 +211,36 @@ async def entrypoint(ctx: JobContext):
     logger.log_event("tools_loaded", {"count": len(tools), "names": [_get_tool_name(t) for t in tools]})
     
     try:
-        # Configure MCP servers if URL is provided
-        mcp_servers = None
+        # Configure MCP servers
+        mcp_servers = []
+        
+        # Add n8n MCP server if configured
         if config.n8n_mcp_url:
             try:
-                mcp_servers = [mcp.MCPServerHTTP(config.n8n_mcp_url)]
-                logger.log_event("mcp_configured", {"url": config.n8n_mcp_url})
+                mcp_servers.append(mcp.MCPServerHTTP(config.n8n_mcp_url))
+                logger.log_event("mcp_configured", {"type": "n8n", "url": config.n8n_mcp_url})
             except Exception as e:
-                logger.log_error(e, context={"phase": "mcp_setup"})
-                logger.log_event("mcp_failed", {"url": config.n8n_mcp_url, "error": str(e)})
+                logger.log_error(e, context={"phase": "n8n_mcp_setup"})
+        
+        # Add Smithery MCP servers if configured
+        if config.smithery_api_key and config.smithery_servers:
+            for server_name in config.smithery_servers.split(","):
+                server_name = server_name.strip()
+                if server_name:
+                    try:
+                        smithery_url = f"https://server.smithery.ai/{server_name}/mcp"
+                        # Smithery requires API key in headers
+                        mcp_servers.append(mcp.MCPServerHTTP(
+                            smithery_url,
+                            headers={"Authorization": f"Bearer {config.smithery_api_key}"}
+                        ))
+                        logger.log_event("mcp_configured", {"type": "smithery", "server": server_name})
+                    except Exception as e:
+                        logger.log_error(e, context={"phase": "smithery_mcp_setup", "server": server_name})
+        
+        # Set to None if no servers configured
+        if not mcp_servers:
+            mcp_servers = None
         
         # Load system prompt from file (or use config fallback)
         try:
