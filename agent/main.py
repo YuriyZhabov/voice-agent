@@ -18,6 +18,7 @@ from livekit.plugins import cartesia, deepgram, groq, openai, silero
 
 from agent.config import load_config
 from agent.logger import CallLogger
+from agent.prompts import get_assistant_prompt
 from agent.tools import get_all_tools
 
 
@@ -220,15 +221,17 @@ async def entrypoint(ctx: JobContext):
                 logger.log_error(e, context={"phase": "mcp_setup"})
                 logger.log_event("mcp_failed", {"url": config.n8n_mcp_url, "error": str(e)})
         
+        # Load system prompt from file (or use config fallback)
+        try:
+            system_prompt = get_assistant_prompt()
+            logger.log_event("prompt_loaded", {"source": "file", "length": len(system_prompt)})
+        except FileNotFoundError:
+            system_prompt = config.agent_system_prompt
+            logger.log_event("prompt_loaded", {"source": "config", "length": len(system_prompt)})
+        
         # Create the agent with system prompt and tools
         agent = Agent(
-            instructions=config.agent_system_prompt + """
-
-Доступные инструменты:
-- end_call: Вызови когда пользователь прощается или хочет завершить разговор
-- get_current_time: Вызови когда пользователь спрашивает который час
-
-Когда пользователь прощается, вызови end_call и попрощайся.""",
+            instructions=system_prompt,
             tools=tools,
             mcp_servers=mcp_servers,
         )
