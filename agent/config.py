@@ -51,13 +51,7 @@ class AgentConfig(BaseSettings):
     # LLM Provider Selection
     llm_provider: str = Field(
         default="openai",
-        description="LLM provider: 'inference' (LiveKit), 'groq', or 'openai'",
-    )
-    
-    # LLM - LiveKit Inference (recommended for lowest latency)
-    inference_model: str = Field(
-        default="openai/gpt-4.1-mini",
-        description="LiveKit Inference model ID (e.g., openai/gpt-4.1-mini, moonshotai/kimi-k2-instruct)",
+        description="LLM provider: 'groq' or 'openai'",
     )
     
     # LLM - OpenAI-compatible API (required if llm_provider=openai)
@@ -155,14 +149,9 @@ class AgentConfig(BaseSettings):
     @field_validator("livekit_url")
     @classmethod
     def validate_livekit_url(cls, v: str) -> str:
-        """Validate and normalize LiveKit URL."""
-        # LiveKit Cloud may pass https:// URL, convert to wss://
-        if v.startswith("https://"):
-            v = v.replace("https://", "wss://")
-        elif v.startswith("http://"):
-            v = v.replace("http://", "ws://")
+        """Validate LiveKit URL starts with wss:// or ws://."""
         if not v.startswith(("wss://", "ws://")):
-            raise ValueError("LiveKit URL must start with wss://, ws://, https://, or http://")
+            raise ValueError("LiveKit URL must start with wss:// or ws://")
         return v
     
     @field_validator("n8n_mcp_url")

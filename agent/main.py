@@ -243,11 +243,7 @@ async def entrypoint(ctx: JobContext):
         )
 
         # Select LLM based on provider config
-        if config.llm_provider == "inference":
-            # LiveKit Inference - pass model ID string directly
-            llm_instance = config.inference_model
-            logger.log_event("llm_provider", {"provider": "inference", "model": config.inference_model})
-        elif config.llm_provider == "groq":
+        if config.llm_provider == "groq":
             llm_instance = groq.LLM(model=config.groq_model)
             logger.log_event("llm_provider", {"provider": "groq", "model": config.groq_model})
         else:
@@ -265,11 +261,7 @@ async def entrypoint(ctx: JobContext):
                 language="ru",  # Russian language
             ),
             llm=llm_instance,
-            tts=elevenlabs.TTS(
-                voice_id=config.elevenlabs_voice_id,
-                model="eleven_turbo_v2_5",  # Supports language parameter
-                language="ru",  # Russian language
-            ),
+            tts=elevenlabs.TTS(voice_id=config.elevenlabs_voice_id),
         )
         
         # Set up event handlers for silence monitoring, interruption handling, and latency tracking
