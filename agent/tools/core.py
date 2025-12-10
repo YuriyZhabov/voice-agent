@@ -55,7 +55,7 @@ async def end_call(context: RunContext, reason: str = "user_farewell") -> str:
     
     # Schedule hangup after delay to allow farewell message to be spoken
     async def delayed_hangup():
-        await asyncio.sleep(4.0)  # Wait for TTS to finish farewell
+        await asyncio.sleep(5.0)  # Wait for TTS to finish farewell
         try:
             job_ctx = get_job_context()
             if job_ctx is not None and job_ctx.room:
