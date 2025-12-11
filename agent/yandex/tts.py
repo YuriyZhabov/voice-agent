@@ -6,12 +6,10 @@ Implements streaming speech synthesis using SpeechKit API v3 via gRPC.
 from __future__ import annotations
 
 import logging
-import uuid
 from dataclasses import dataclass
 
 import grpc
 
-from livekit import rtc
 from livekit.agents import tts, APIConnectOptions
 
 from agent.yandex.credentials import YandexCredentials
@@ -80,27 +78,47 @@ class YandexTTS(tts.TTS):
         text: str,
         *,
         conn_options: APIConnectOptions = APIConnectOptions(),
-    ) -> "YandexTTSStream":
-        """Synthesize text to speech.
+    ) -> "YandexTTSChunkedStream":
+        """Synthesize text to speech (non-streaming).
         
         Args:
-            text: Text to synthesize (can include SSML markup)
+            text: Text to synthesize
             conn_options: Connection options
         
         Returns:
-            YandexTTSStream for streaming audio output
+            YandexTTSChunkedStream for audio output
         """
-        return YandexTTSStream(
+        return YandexTTSChunkedStream(
             tts=self,
             input_text=text,
             conn_options=conn_options,
             credentials=self._credentials,
             opts=self._opts,
         )
+    
+    def stream(
+        self,
+        *,
+        conn_options: APIConnectOptions = APIConnectOptions(),
+    ) -> "YandexTTSSynthesizeStream":
+        """Create streaming TTS session.
+        
+        Args:
+            conn_options: Connection options
+        
+        Returns:
+            YandexTTSSynthesizeStream for streaming synthesis
+        """
+        return YandexTTSSynthesizeStream(
+            tts=self,
+            conn_options=conn_options,
+            credentials=self._credentials,
+            opts=self._opts,
+        )
 
 
-class YandexTTSStream(tts.ChunkedStream):
-    """Streaming TTS using SpeechKit gRPC API v3."""
+class YandexTTSChunkedStream(tts.ChunkedStream):
+    """Non-streaming TTS using SpeechKit gRPC API v3."""
     
     def __init__(
         self,
@@ -116,31 +134,21 @@ class YandexTTSStream(tts.ChunkedStream):
         self._opts = opts
         self._channel: grpc.aio.Channel | None = None
     
-    async def _run(self) -> None:
-        """Stream synthesized audio chunks."""
+    async def _run(self, output_emitter: tts.AudioEmitter) -> None:
+        """Synthesize and emit audio chunks."""
         try:
             from yandex.cloud.ai.tts.v3 import tts_service_pb2_grpc
             from yandex.cloud.ai.tts.v3 import tts_pb2
         except ImportError as e:
-            logger.error(
-                "Failed to import SpeechKit TTS gRPC stubs. "
-                "Run: pip install yandexcloud"
-            )
-            raise ImportError(
-                "SpeechKit TTS gRPC stubs not found. Install yandexcloud package."
-            ) from e
+            logger.error("Failed to import SpeechKit TTS gRPC stubs.")
+            raise ImportError("Install yandexcloud package.") from e
         
-        # Create secure gRPC channel
         ssl_creds = grpc.ssl_channel_credentials()
         self._channel = grpc.aio.secure_channel(TTS_ENDPOINT, ssl_creds)
         
         try:
             stub = tts_service_pb2_grpc.SynthesizerStub(self._channel)
             
-            # Generate request ID
-            request_id = str(uuid.uuid4())
-            
-            # Build request
             request = tts_pb2.UtteranceSynthesisRequest(
                 text=self._input_text,
                 output_audio_spec=tts_pb2.AudioFormatOptions(
@@ -157,31 +165,108 @@ class YandexTTSStream(tts.ChunkedStream):
                 loudness_normalization_type=tts_pb2.UtteranceSynthesisRequest.LUFS,
             )
             
-            # Stream response
             metadata = self._credentials.get_grpc_metadata()
             responses = stub.UtteranceSynthesis(request, metadata=metadata)
             
+            # CRITICAL: Initialize emitter before pushing audio data
+            first_chunk = True
             async for response in responses:
                 if response.HasField("audio_chunk"):
-                    audio_data = response.audio_chunk.data
+                    if first_chunk:
+                        output_emitter.initialize(
+                            request_id=self._input_text[:32],
+                            sample_rate=self._opts.sample_rate,
+                            num_channels=1,
+                            mime_type="audio/pcm",
+                        )
+                        first_chunk = False
+                    output_emitter.push(response.audio_chunk.data)
                     
-                    # Calculate samples per channel (16-bit audio = 2 bytes per sample)
-                    samples_per_channel = len(audio_data) // 2
-                    
-                    # Create AudioFrame
-                    audio_frame = rtc.AudioFrame(
-                        data=audio_data,
-                        sample_rate=self._opts.sample_rate,
-                        num_channels=1,
-                        samples_per_channel=samples_per_channel,
-                    )
-                    
-                    # Create SynthesizedAudio event
-                    synth_audio = tts.SynthesizedAudio(
-                        frame=audio_frame,
-                        request_id=request_id,
-                    )
-                    self._event_ch.send_nowait(synth_audio)
+        except grpc.aio.AioRpcError as e:
+            logger.error(f"SpeechKit TTS error: {e.code()} - {e.details()}")
+            raise
+        finally:
+            if self._channel:
+                await self._channel.close()
+
+
+class YandexTTSSynthesizeStream(tts.SynthesizeStream):
+    """Streaming TTS using SpeechKit - receives text chunks, outputs audio."""
+    
+    def __init__(
+        self,
+        *,
+        tts: YandexTTS,
+        conn_options: APIConnectOptions,
+        credentials: YandexCredentials,
+        opts: _TTSOptions,
+    ) -> None:
+        super().__init__(tts=tts, conn_options=conn_options)
+        self._credentials = credentials
+        self._opts = opts
+        self._channel: grpc.aio.Channel | None = None
+    
+    async def _run(self, output_emitter: tts.AudioEmitter) -> None:
+        """Process text segments and synthesize audio."""
+        try:
+            from yandex.cloud.ai.tts.v3 import tts_service_pb2_grpc
+            from yandex.cloud.ai.tts.v3 import tts_pb2
+        except ImportError as e:
+            logger.error("Failed to import SpeechKit TTS gRPC stubs.")
+            raise ImportError("Install yandexcloud package.") from e
+        
+        ssl_creds = grpc.ssl_channel_credentials()
+        self._channel = grpc.aio.secure_channel(TTS_ENDPOINT, ssl_creds)
+        
+        try:
+            stub = tts_service_pb2_grpc.SynthesizerStub(self._channel)
+            
+            # CRITICAL: Initialize emitter before processing segments
+            emitter_initialized = False
+            segment_count = 0
+            
+            # Process incoming text segments
+            async for segment in self._input_ch:
+                if isinstance(segment, self._FlushSentinel):
+                    continue
+                
+                text = segment.text if hasattr(segment, 'text') else str(segment)
+                if not text.strip():
+                    continue
+                
+                segment_count += 1
+                
+                request = tts_pb2.UtteranceSynthesisRequest(
+                    text=text,
+                    output_audio_spec=tts_pb2.AudioFormatOptions(
+                        raw_audio=tts_pb2.RawAudio(
+                            audio_encoding=tts_pb2.RawAudio.LINEAR16_PCM,
+                            sample_rate_hertz=self._opts.sample_rate,
+                        )
+                    ),
+                    hints=[
+                        tts_pb2.Hints(voice=self._opts.voice),
+                        tts_pb2.Hints(role=self._opts.role),
+                        tts_pb2.Hints(speed=self._opts.speed),
+                    ],
+                    loudness_normalization_type=tts_pb2.UtteranceSynthesisRequest.LUFS,
+                )
+                
+                metadata = self._credentials.get_grpc_metadata()
+                responses = stub.UtteranceSynthesis(request, metadata=metadata)
+                
+                async for response in responses:
+                    if response.HasField("audio_chunk"):
+                        # Initialize emitter on first audio chunk
+                        if not emitter_initialized:
+                            output_emitter.initialize(
+                                request_id=f"tts-stream-{segment_count}",
+                                sample_rate=self._opts.sample_rate,
+                                num_channels=1,
+                                mime_type="audio/pcm",
+                            )
+                            emitter_initialized = True
+                        output_emitter.push(response.audio_chunk.data)
                     
         except grpc.aio.AioRpcError as e:
             logger.error(f"SpeechKit TTS error: {e.code()} - {e.details()}")

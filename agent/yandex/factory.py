@@ -48,26 +48,19 @@ def create_tts(config: "AgentConfig") -> "tts.TTS":
         config: Agent configuration with provider settings
     
     Returns:
-        TTS instance (YandexTTS wrapped in StreamAdapter, or Cartesia)
+        TTS instance (YandexTTS or Cartesia)
     """
     if config.tts_provider == "yandex":
         from agent.yandex.tts import YandexTTS
         from agent.yandex.credentials import YandexCredentials
-        from livekit.agents.tts import StreamAdapter
-        from livekit.agents import tokenize
         
         logger.info("Using Yandex SpeechKit TTS")
-        base_tts = YandexTTS(
+        return YandexTTS(
             credentials=YandexCredentials.from_env(),
             voice=config.yandex_tts_voice,
             role=config.yandex_tts_role,
             speed=config.yandex_tts_speed,
             sample_rate=config.yandex_tts_sample_rate,
-        )
-        # Wrap in StreamAdapter for streaming support
-        return StreamAdapter(
-            tts=base_tts,
-            sentence_tokenizer=tokenize.basic.SentenceTokenizer(),
         )
     else:
         from livekit.plugins import cartesia

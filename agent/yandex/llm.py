@@ -203,6 +203,8 @@ class YandexLLMStream(llm.LLMStream):
         # Convert messages
         messages = _convert_messages(self._chat_ctx)
         
+        logger.info(f"YandexGPT messages: {messages}")
+        
         if not messages:
             logger.warning("No messages to send to YandexGPT")
             return
@@ -210,31 +212,24 @@ class YandexLLMStream(llm.LLMStream):
         try:
             # Get model and configure
             model = sdk.models.completions(self._opts.model)
-            model = model.configure(
-                temperature=self._opts.temperature,
-                max_tokens=self._opts.max_tokens,
-            )
+            model = model.configure(temperature=self._opts.temperature)
             
             # Generate unique request ID
             request_id = str(uuid.uuid4())
             
-            # Run completion - SDK handles it synchronously, we run in executor
+            # Run completion - SDK is sync, run in executor
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(None, lambda: model.run(messages))
             
-            # Process result - YandexGPT returns alternatives
-            for alternative in result:
-                # Extract text from alternative
-                if hasattr(alternative, 'text'):
-                    text = alternative.text
-                elif hasattr(alternative, 'message'):
-                    msg = alternative.message
-                    text = getattr(msg, 'text', str(msg))
-                else:
-                    text = str(alternative)
+            logger.info(f"YandexGPT result: {result}")
+            
+            # Process result - GPTModelResult has alternatives tuple
+            for alternative in result.alternatives:
+                text = alternative.text
+                logger.info(f"YandexGPT response: {text[:100] if text else 'empty'}...")
                 
                 if text:
-                    # Emit chunk with new API format
+                    # Emit chunk
                     chunk = ChatChunk(
                         id=request_id,
                         delta=ChoiceDelta(
@@ -247,5 +242,5 @@ class YandexLLMStream(llm.LLMStream):
                     self._event_ch.send_nowait(chunk)
                     
         except Exception as e:
-            logger.error(f"YandexGPT error: {e}")
+            logger.error(f"YandexGPT error: {e}", exc_info=True)
             raise
