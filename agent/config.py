@@ -42,9 +42,9 @@ class AgentConfig(BaseSettings):
         description="System prompt for the agent",
     )
     
-    # STT - Deepgram (required)
+    # STT - Deepgram (required if stt_provider=deepgram)
     deepgram_api_key: str = Field(
-        ...,
+        default="",
         description="Deepgram API key for speech-to-text",
     )
     
