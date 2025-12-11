@@ -17,6 +17,7 @@ from livekit.agents import mcp
 from livekit.plugins import cartesia, deepgram, groq, openai, silero
 
 from agent.config import load_config
+from agent.yandex import create_stt, create_tts, create_llm
 from agent.logger import CallLogger
 from agent.prompts import get_assistant_prompt
 from agent.tools import get_all_tools
@@ -244,30 +245,41 @@ async def entrypoint(ctx: JobContext):
             mcp_servers=mcp_servers,
         )
 
-        # Select LLM based on provider config
-        if config.llm_provider == "groq":
+        # Select providers based on config (supports yandex/deepgram/cartesia/openai/groq)
+        
+        # STT Provider
+        if config.stt_provider == "yandex":
+            stt_instance = create_stt(config)
+            logger.log_event("stt_provider", {"provider": "yandex", "model": config.yandex_stt_model})
+        else:
+            stt_instance = deepgram.STT(model="nova-3", language="ru")
+            logger.log_event("stt_provider", {"provider": "deepgram", "model": "nova-3"})
+        
+        # TTS Provider
+        if config.tts_provider == "yandex":
+            tts_instance = create_tts(config)
+            logger.log_event("tts_provider", {"provider": "yandex", "voice": config.yandex_tts_voice})
+        else:
+            tts_instance = cartesia.TTS(model="sonic-3", voice=config.cartesia_voice_id, language="ru")
+            logger.log_event("tts_provider", {"provider": "cartesia", "voice": config.cartesia_voice_id})
+        
+        # LLM Provider
+        if config.llm_provider == "yandex":
+            llm_instance = create_llm(config)
+            logger.log_event("llm_provider", {"provider": "yandex", "model": config.yandex_llm_model})
+        elif config.llm_provider == "groq":
             llm_instance = groq.LLM(model=config.groq_model)
             logger.log_event("llm_provider", {"provider": "groq", "model": config.groq_model})
         else:
-            llm_instance = openai.LLM(
-                model=config.openai_model,
-                base_url=config.openai_base_url,
-            )
+            llm_instance = openai.LLM(model=config.openai_model, base_url=config.openai_base_url)
             logger.log_event("llm_provider", {"provider": "openai", "model": config.openai_model})
         
         # Create the agent session with voice pipeline and userdata for state
         agent_session = AgentSession(
             vad=silero.VAD.load(),
-            stt=deepgram.STT(
-                model="nova-3",
-                language="ru",  # Russian language
-            ),
+            stt=stt_instance,
             llm=llm_instance,
-            tts=cartesia.TTS(
-                model="sonic-3",
-                voice=config.cartesia_voice_id,
-                language="ru",
-            ),
+            tts=tts_instance,
             userdata={"call_ending": False, "room_name": room_name},
         )
         

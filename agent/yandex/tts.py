@@ -5,19 +5,16 @@ Implements streaming speech synthesis using SpeechKit API v3 via gRPC.
 
 from __future__ import annotations
 
-import asyncio
 import logging
+import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 import grpc
 
-from livekit.agents import tts
+from livekit import rtc
+from livekit.agents import tts, APIConnectOptions
 
 from agent.yandex.credentials import YandexCredentials
-
-if TYPE_CHECKING:
-    pass
 
 logger = logging.getLogger(__name__)
 
@@ -39,16 +36,6 @@ class YandexTTS(tts.TTS):
     """SpeechKit TTS plugin for LiveKit Agents.
     
     Provides streaming speech synthesis using Yandex SpeechKit API v3.
-    
-    Example:
-        >>> from agent.yandex import YandexCredentials
-        >>> from agent.yandex.tts import YandexTTS
-        >>> 
-        >>> creds = YandexCredentials.from_env()
-        >>> tts = YandexTTS(credentials=creds, voice="alena")
-        >>> 
-        >>> # Use in AgentSession
-        >>> session = AgentSession(tts=tts, ...)
     """
     
     def __init__(
@@ -88,39 +75,43 @@ class YandexTTS(tts.TTS):
             format=audio_format,
         )
     
-    def synthesize(self, text: str) -> YandexTTSStream:
+    def synthesize(
+        self,
+        text: str,
+        *,
+        conn_options: APIConnectOptions = APIConnectOptions(),
+    ) -> "YandexTTSStream":
         """Synthesize text to speech.
         
         Args:
             text: Text to synthesize (can include SSML markup)
+            conn_options: Connection options
         
         Returns:
             YandexTTSStream for streaming audio output
         """
         return YandexTTSStream(
             tts=self,
-            text=text,
+            input_text=text,
+            conn_options=conn_options,
             credentials=self._credentials,
             opts=self._opts,
         )
 
 
 class YandexTTSStream(tts.ChunkedStream):
-    """Streaming TTS using SpeechKit gRPC API v3.
-    
-    Yields audio chunks as they arrive from the API.
-    """
+    """Streaming TTS using SpeechKit gRPC API v3."""
     
     def __init__(
         self,
         *,
         tts: YandexTTS,
-        text: str,
+        input_text: str,
+        conn_options: APIConnectOptions,
         credentials: YandexCredentials,
         opts: _TTSOptions,
     ) -> None:
-        super().__init__(tts=tts, input_text=text)
-        self._text = text
+        super().__init__(tts=tts, input_text=input_text, conn_options=conn_options)
         self._credentials = credentials
         self._opts = opts
         self._channel: grpc.aio.Channel | None = None
@@ -133,7 +124,7 @@ class YandexTTSStream(tts.ChunkedStream):
         except ImportError as e:
             logger.error(
                 "Failed to import SpeechKit TTS gRPC stubs. "
-                "Run: pip install yandexcloud grpcio-tools"
+                "Run: pip install yandexcloud"
             )
             raise ImportError(
                 "SpeechKit TTS gRPC stubs not found. Install yandexcloud package."
@@ -146,45 +137,18 @@ class YandexTTSStream(tts.ChunkedStream):
         try:
             stub = tts_service_pb2_grpc.SynthesizerStub(self._channel)
             
-            # Determine if text contains SSML
-            is_ssml = self._text.strip().startswith("<speak")
+            # Generate request ID
+            request_id = str(uuid.uuid4())
             
             # Build request
-            if is_ssml:
-                text_template = tts_pb2.TextTemplate(
-                    ssml=self._text,
-                )
-            else:
-                text_template = tts_pb2.TextTemplate(
-                    text=self._text,
-                )
-            
-            # Map format
-            if self._opts.format == "oggopus":
-                container_audio = tts_pb2.ContainerAudio(
-                    container_audio_type=tts_pb2.ContainerAudio.OGG_OPUS,
-                )
-                audio_format = tts_pb2.AudioFormatOptions(
-                    container_audio=container_audio,
-                )
-            else:  # lpcm
-                raw_audio = tts_pb2.RawAudio(
-                    audio_encoding=tts_pb2.RawAudio.LINEAR16_PCM,
-                    sample_rate_hertz=self._opts.sample_rate,
-                )
-                audio_format = tts_pb2.AudioFormatOptions(
-                    raw_audio=raw_audio,
-                )
-            
             request = tts_pb2.UtteranceSynthesisRequest(
-                text=self._text if not is_ssml else None,
-                text_template=text_template if is_ssml else None,
+                text=self._input_text,
                 output_audio_spec=tts_pb2.AudioFormatOptions(
                     raw_audio=tts_pb2.RawAudio(
                         audio_encoding=tts_pb2.RawAudio.LINEAR16_PCM,
                         sample_rate_hertz=self._opts.sample_rate,
                     )
-                ) if self._opts.format == "lpcm" else audio_format,
+                ),
                 hints=[
                     tts_pb2.Hints(voice=self._opts.voice),
                     tts_pb2.Hints(role=self._opts.role),
@@ -197,22 +161,27 @@ class YandexTTSStream(tts.ChunkedStream):
             metadata = self._credentials.get_grpc_metadata()
             responses = stub.UtteranceSynthesis(request, metadata=metadata)
             
-            request_id = None
             async for response in responses:
                 if response.HasField("audio_chunk"):
                     audio_data = response.audio_chunk.data
                     
-                    # Create audio frame
-                    frame = tts.SynthesizedAudio(
-                        request_id=request_id or "",
-                        frame=tts.AudioFrame(
-                            data=audio_data,
-                            sample_rate=self._opts.sample_rate,
-                            num_channels=1,
-                            samples_per_channel=len(audio_data) // 2,  # 16-bit audio
-                        ),
+                    # Calculate samples per channel (16-bit audio = 2 bytes per sample)
+                    samples_per_channel = len(audio_data) // 2
+                    
+                    # Create AudioFrame
+                    audio_frame = rtc.AudioFrame(
+                        data=audio_data,
+                        sample_rate=self._opts.sample_rate,
+                        num_channels=1,
+                        samples_per_channel=samples_per_channel,
                     )
-                    self._event_ch.send_nowait(frame)
+                    
+                    # Create SynthesizedAudio event
+                    synth_audio = tts.SynthesizedAudio(
+                        frame=audio_frame,
+                        request_id=request_id,
+                    )
+                    self._event_ch.send_nowait(synth_audio)
                     
         except grpc.aio.AioRpcError as e:
             logger.error(f"SpeechKit TTS error: {e.code()} - {e.details()}")

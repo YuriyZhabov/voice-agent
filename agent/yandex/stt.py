@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 
 import grpc
 
-from livekit.agents import stt, utils
+from livekit.agents import stt, APIConnectOptions, utils
 
 from agent.yandex.credentials import YandexCredentials
 
@@ -39,16 +39,6 @@ class YandexSTT(stt.STT):
     """SpeechKit STT plugin for LiveKit Agents.
     
     Provides streaming speech recognition using Yandex SpeechKit API v3.
-    
-    Example:
-        >>> from agent.yandex import YandexCredentials
-        >>> from agent.yandex.stt import YandexSTT
-        >>> 
-        >>> creds = YandexCredentials.from_env()
-        >>> stt = YandexSTT(credentials=creds)
-        >>> 
-        >>> # Use in AgentSession
-        >>> session = AgentSession(stt=stt, ...)
     """
     
     def __init__(
@@ -84,15 +74,55 @@ class YandexSTT(stt.STT):
             sample_rate=sample_rate,
         )
     
+    async def _recognize_impl(
+        self,
+        buffer: utils.AudioBuffer,
+        *,
+        language: str | None = None,
+        conn_options: APIConnectOptions = APIConnectOptions(),
+    ) -> stt.SpeechEvent:
+        """Synchronous recognition implementation (required by base class)."""
+        # Use streaming internally for recognition
+        stream = self.stream(language=language, conn_options=conn_options)
+        
+        # Push all audio frames
+        for frame in buffer:
+            stream.push_frame(frame)
+        
+        # End input and get final result
+        stream.end_input()
+        
+        final_text = ""
+        async for event in stream:
+            if event.type == stt.SpeechEventType.FINAL_TRANSCRIPT:
+                if event.alternatives:
+                    final_text = event.alternatives[0].text
+                break
+        
+        await stream.aclose()
+        
+        return stt.SpeechEvent(
+            type=stt.SpeechEventType.FINAL_TRANSCRIPT,
+            alternatives=[
+                stt.SpeechData(
+                    text=final_text,
+                    confidence=1.0,
+                    language=language or self._opts.language,
+                )
+            ],
+        )
+    
     def stream(
         self,
         *,
         language: str | None = None,
-    ) -> YandexSTTStream:
+        conn_options: APIConnectOptions = APIConnectOptions(),
+    ) -> "YandexSTTStream":
         """Create a streaming recognition session.
         
         Args:
             language: Override default language for this session
+            conn_options: Connection options
         
         Returns:
             YandexSTTStream instance for streaming recognition
@@ -107,14 +137,12 @@ class YandexSTT(stt.STT):
             stt=self,
             credentials=self._credentials,
             opts=opts,
+            conn_options=conn_options,
         )
 
 
-class YandexSTTStream(stt.SpeechStream):
-    """Streaming STT session using SpeechKit gRPC API v3.
-    
-    Handles bidirectional streaming: sends audio chunks, receives transcriptions.
-    """
+class YandexSTTStream(stt.RecognizeStream):
+    """Streaming STT session using SpeechKit gRPC API v3."""
     
     def __init__(
         self,
@@ -122,31 +150,23 @@ class YandexSTTStream(stt.SpeechStream):
         stt: YandexSTT,
         credentials: YandexCredentials,
         opts: _STTOptions,
+        conn_options: APIConnectOptions,
     ) -> None:
-        super().__init__(stt=stt)
+        super().__init__(stt=stt, conn_options=conn_options, sample_rate=opts.sample_rate)
         self._credentials = credentials
         self._opts = opts
         self._channel: grpc.aio.Channel | None = None
-        self._reconnect_event = asyncio.Event()
         self._session_start_time: float = 0
         
     async def _run(self) -> None:
-        """Main streaming loop.
-        
-        1. Establishes gRPC connection
-        2. Sends session options
-        3. Streams audio chunks
-        4. Yields SpeechEvents for results
-        """
+        """Main streaming loop."""
         try:
-            # Import gRPC stubs (generated from proto)
-            # Note: These need to be generated from yandex-cloud/cloudapi protos
             from yandex.cloud.ai.stt.v3 import stt_service_pb2_grpc
             from yandex.cloud.ai.stt.v3 import stt_pb2
         except ImportError as e:
             logger.error(
                 "Failed to import SpeechKit gRPC stubs. "
-                "Run: pip install yandexcloud grpcio-tools"
+                "Run: pip install yandexcloud"
             )
             raise ImportError(
                 "SpeechKit gRPC stubs not found. Install yandexcloud package."
@@ -188,20 +208,22 @@ class YandexSTTStream(stt.SpeechStream):
                 )
                 yield session_options
                 
-                # Stream audio chunks
+                # Stream audio chunks from input channel
                 async for frame in self._input_ch:
                     if isinstance(frame, self._FlushSentinel):
                         continue
                     
+                    # Get audio data from frame
+                    audio_data = frame.data.tobytes() if hasattr(frame.data, 'tobytes') else bytes(frame.data)
+                    
                     chunk = stt_pb2.StreamingRequest(
-                        chunk=stt_pb2.AudioChunk(data=frame.data.tobytes())
+                        chunk=stt_pb2.AudioChunk(data=audio_data)
                     )
                     yield chunk
                     
                     # Check session duration (5 min limit)
-                    if time.time() - self._session_start_time > 290:  # 4:50
-                        logger.warning("STT session approaching 5 min limit, reconnecting...")
-                        self._reconnect_event.set()
+                    if time.time() - self._session_start_time > 290:
+                        logger.warning("STT session approaching 5 min limit")
                         break
             
             # Start bidirectional streaming
@@ -226,7 +248,6 @@ class YandexSTTStream(stt.SpeechStream):
     
     def _convert_response(self, response) -> stt.SpeechEvent | None:
         """Convert SpeechKit response to LiveKit SpeechEvent."""
-        # Check response type
         if not response.HasField("final") and not response.HasField("partial"):
             return None
         
@@ -243,7 +264,7 @@ class YandexSTTStream(stt.SpeechStream):
         alternatives = [
             stt.SpeechData(
                 text=alt.text,
-                confidence=alt.confidence if hasattr(alt, 'confidence') else 1.0,
+                confidence=getattr(alt, 'confidence', 1.0),
                 language=self._opts.language,
             )
             for alt in alternatives_data

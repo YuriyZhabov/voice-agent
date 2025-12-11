@@ -8,10 +8,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
-from livekit.agents import llm
+from livekit.agents import llm, APIConnectOptions
+from livekit.agents.llm import ChatChunk, ChoiceDelta, FunctionToolCall
 
 from agent.yandex.credentials import YandexCredentials
 
@@ -92,15 +94,21 @@ class YandexLLM(llm.LLM):
         self,
         *,
         chat_ctx: llm.ChatContext,
-        tools: list[llm.FunctionTool] | None = None,
-        tool_choice: llm.ToolChoice = "auto",
-    ) -> YandexLLMStream:
+        tools: list[llm.FunctionTool | llm.RawFunctionTool] | None = None,
+        conn_options: APIConnectOptions = APIConnectOptions(),
+        parallel_tool_calls: Any = None,
+        tool_choice: Any = None,
+        extra_kwargs: Any = None,
+    ) -> "YandexLLMStream":
         """Generate chat completion.
         
         Args:
             chat_ctx: Chat context with message history
             tools: Optional list of function tools
-            tool_choice: Tool selection mode
+            conn_options: Connection options
+            parallel_tool_calls: Ignored for Yandex
+            tool_choice: Ignored for Yandex
+            extra_kwargs: Ignored for Yandex
         
         Returns:
             YandexLLMStream for streaming response
@@ -108,8 +116,8 @@ class YandexLLM(llm.LLM):
         return YandexLLMStream(
             llm=self,
             chat_ctx=chat_ctx,
-            tools=tools,
-            tool_choice=tool_choice,
+            tools=tools or [],
+            conn_options=conn_options,
             credentials=self._credentials,
             opts=self._opts,
             sdk_getter=self._get_sdk,
@@ -120,8 +128,18 @@ def _convert_messages(chat_ctx: llm.ChatContext) -> list[dict[str, str]]:
     """Convert LiveKit ChatContext to YandexGPT message format."""
     messages = []
     
-    for msg in chat_ctx.messages:
-        role = msg.role.value if hasattr(msg.role, 'value') else str(msg.role)
+    # Get messages from ChatContext
+    items = getattr(chat_ctx, 'items', None)
+    if items is None:
+        # Fallback to messages attribute
+        items = getattr(chat_ctx, 'messages', [])
+    
+    for item in items:
+        # Handle ChatMessage objects
+        role = getattr(item, 'role', 'user')
+        if hasattr(role, 'value'):
+            role = role.value
+        role = str(role)
         
         # Map LiveKit roles to YandexGPT roles
         if role in ("system", "developer"):
@@ -131,19 +149,24 @@ def _convert_messages(chat_ctx: llm.ChatContext) -> list[dict[str, str]]:
         elif role == "assistant":
             yandex_role = "assistant"
         else:
-            yandex_role = "user"  # Default fallback
+            yandex_role = "user"
         
         # Extract text content
         content = ""
-        if isinstance(msg.content, str):
-            content = msg.content
-        elif isinstance(msg.content, list):
+        item_content = getattr(item, 'content', None)
+        
+        if isinstance(item_content, str):
+            content = item_content
+        elif item_content is None:
+            # Try to get text from item directly
+            content = getattr(item, 'text', '') or ''
+        elif isinstance(item_content, list):
             # Handle multi-part content
-            for part in msg.content:
-                if hasattr(part, 'text'):
-                    content += part.text
-                elif isinstance(part, str):
+            for part in item_content:
+                if isinstance(part, str):
                     content += part
+                elif hasattr(part, 'text'):
+                    content += part.text
         
         if content:
             messages.append({
@@ -154,28 +177,6 @@ def _convert_messages(chat_ctx: llm.ChatContext) -> list[dict[str, str]]:
     return messages
 
 
-def _convert_tools(tools: list[llm.FunctionTool] | None) -> list[dict[str, Any]] | None:
-    """Convert LiveKit FunctionTools to YandexGPT function format."""
-    if not tools:
-        return None
-    
-    yandex_tools = []
-    for tool in tools:
-        func_def = {
-            "function": {
-                "name": tool.name,
-                "description": tool.description or "",
-                "parameters": tool.parameters if hasattr(tool, 'parameters') else {
-                    "type": "object",
-                    "properties": {},
-                },
-            }
-        }
-        yandex_tools.append(func_def)
-    
-    return yandex_tools
-
-
 class YandexLLMStream(llm.LLMStream):
     """Streaming LLM response from YandexGPT."""
     
@@ -184,17 +185,16 @@ class YandexLLMStream(llm.LLMStream):
         *,
         llm: YandexLLM,
         chat_ctx: llm.ChatContext,
-        tools: list[llm.FunctionTool] | None,
-        tool_choice: llm.ToolChoice,
+        tools: list[llm.FunctionTool | llm.RawFunctionTool],
+        conn_options: APIConnectOptions,
         credentials: YandexCredentials,
         opts: _LLMOptions,
         sdk_getter,
     ) -> None:
-        super().__init__(llm=llm, chat_ctx=chat_ctx, tools=tools)
+        super().__init__(llm=llm, chat_ctx=chat_ctx, tools=tools, conn_options=conn_options)
         self._credentials = credentials
         self._opts = opts
         self._sdk_getter = sdk_getter
-        self._tool_choice = tool_choice
 
     async def _run(self) -> None:
         """Stream tokens from YandexGPT."""
@@ -203,8 +203,9 @@ class YandexLLMStream(llm.LLMStream):
         # Convert messages
         messages = _convert_messages(self._chat_ctx)
         
-        # Convert tools if provided
-        yandex_tools = _convert_tools(self._tools)
+        if not messages:
+            logger.warning("No messages to send to YandexGPT")
+            return
         
         try:
             # Get model and configure
@@ -214,64 +215,34 @@ class YandexLLMStream(llm.LLMStream):
                 max_tokens=self._opts.max_tokens,
             )
             
-            # Run completion (SDK handles streaming internally)
-            # Note: yandex_cloud_ml_sdk run() returns iterator of alternatives
-            result = model.run(messages)
+            # Generate unique request ID
+            request_id = str(uuid.uuid4())
             
-            # Process result
-            request_id = ""
-            full_text = ""
+            # Run completion - SDK handles it synchronously, we run in executor
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, lambda: model.run(messages))
             
+            # Process result - YandexGPT returns alternatives
             for alternative in result:
-                # Each alternative contains the generated text
+                # Extract text from alternative
                 if hasattr(alternative, 'text'):
                     text = alternative.text
-                elif hasattr(alternative, 'message') and hasattr(alternative.message, 'text'):
-                    text = alternative.message.text
+                elif hasattr(alternative, 'message'):
+                    msg = alternative.message
+                    text = getattr(msg, 'text', str(msg))
                 else:
                     text = str(alternative)
                 
-                # Emit the text as a chunk
                 if text:
-                    full_text = text
-                    chunk = llm.ChatChunk(
-                        request_id=request_id,
-                        choices=[
-                            llm.Choice(
-                                delta=llm.ChoiceDelta(
-                                    role="assistant",
-                                    content=text,
-                                ),
-                                index=0,
-                            )
-                        ],
-                    )
-                    self._event_ch.send_nowait(chunk)
-            
-            # Check for tool calls in response
-            # YandexGPT returns tool calls in toolCallList field
-            if hasattr(result, 'tool_calls') and result.tool_calls:
-                for tool_call in result.tool_calls:
-                    func_call = llm.FunctionCallInfo(
-                        tool_call_id=tool_call.get('id', ''),
-                        function_info=llm.FunctionInfo(
-                            name=tool_call.get('function', {}).get('name', ''),
-                            arguments=json.dumps(
-                                tool_call.get('function', {}).get('arguments', {})
-                            ),
+                    # Emit chunk with new API format
+                    chunk = ChatChunk(
+                        id=request_id,
+                        delta=ChoiceDelta(
+                            role="assistant",
+                            content=text,
+                            tool_calls=[],
                         ),
-                    )
-                    chunk = llm.ChatChunk(
-                        request_id=request_id,
-                        choices=[
-                            llm.Choice(
-                                delta=llm.ChoiceDelta(
-                                    role="assistant",
-                                    tool_calls=[func_call],
-                                ),
-                                index=0,
-                            )
-                        ],
+                        usage=None,
                     )
                     self._event_ch.send_nowait(chunk)
                     

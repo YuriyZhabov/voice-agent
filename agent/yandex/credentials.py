@@ -8,13 +8,17 @@ Supports multiple authentication methods:
 
 from __future__ import annotations
 
-import json
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
+
+from dotenv import load_dotenv
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+
+# Load .env file
+load_dotenv()
 
 
 @dataclass
