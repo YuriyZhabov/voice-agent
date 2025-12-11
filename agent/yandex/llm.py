@@ -177,6 +177,101 @@ def _convert_messages(chat_ctx: llm.ChatContext) -> list[dict[str, str]]:
     return messages
 
 
+def _convert_tools_to_yandex(tools: list) -> list[dict]:
+    """Convert LiveKit FunctionTools to YandexGPT tools format.
+    
+    YandexGPT expects tools in format:
+    {
+        "function": {
+            "name": "tool_name",
+            "description": "Tool description",
+            "parameters": {
+                "type": "object",
+                "properties": {...},
+                "required": [...]
+            }
+        }
+    }
+    """
+    import inspect
+    
+    yandex_tools = []
+    
+    for tool in tools:
+        # Get tool info from LiveKit decorator
+        tool_info = getattr(tool, "__livekit_tool_info", None)
+        if not tool_info:
+            continue
+        
+        # Build parameters schema from function signature
+        properties = {}
+        required = []
+        
+        # Get the actual function (unwrap if needed)
+        func = tool
+        if hasattr(tool, "__wrapped__"):
+            func = tool.__wrapped__
+        
+        # Get function signature
+        try:
+            sig = inspect.signature(func)
+            type_hints = {}
+            try:
+                type_hints = func.__annotations__
+            except AttributeError:
+                pass
+            
+            for param_name, param in sig.parameters.items():
+                # Skip 'context' parameter (RunContext)
+                if param_name in ("context", "self", "cls"):
+                    continue
+                
+                param_schema = {"type": "string"}  # Default type
+                
+                # Get type from annotations
+                param_type = type_hints.get(param_name)
+                if param_type:
+                    type_name = getattr(param_type, "__name__", str(param_type))
+                    if type_name in ("int", "integer"):
+                        param_schema["type"] = "integer"
+                    elif type_name in ("float", "number"):
+                        param_schema["type"] = "number"
+                    elif type_name in ("bool", "boolean"):
+                        param_schema["type"] = "boolean"
+                    elif type_name == "str":
+                        param_schema["type"] = "string"
+                
+                # Add description from docstring if available
+                param_schema["description"] = f"Parameter {param_name}"
+                
+                properties[param_name] = param_schema
+                
+                # If no default, it's required
+                if param.default is inspect.Parameter.empty:
+                    required.append(param_name)
+                else:
+                    param_schema["default"] = param.default
+                    
+        except (ValueError, TypeError):
+            # Can't inspect, skip parameters
+            pass
+        
+        yandex_tool = {
+            "function": {
+                "name": tool_info.name,
+                "description": tool_info.description or f"Function {tool_info.name}",
+                "parameters": {
+                    "type": "object",
+                    "properties": properties,
+                    "required": required,
+                }
+            }
+        }
+        yandex_tools.append(yandex_tool)
+    
+    return yandex_tools
+
+
 class YandexLLMStream(llm.LLMStream):
     """Streaming LLM response from YandexGPT."""
     
@@ -217,14 +312,68 @@ class YandexLLMStream(llm.LLMStream):
             # Generate unique request ID
             request_id = str(uuid.uuid4())
             
+            # Convert tools to YandexGPT format
+            yandex_tools = _convert_tools_to_yandex(self._tools) if self._tools else []
+            
+            if yandex_tools:
+                logger.info(f"YandexGPT tools: {[t['function']['name'] for t in yandex_tools]}")
+            
             # Run completion - SDK is sync, run in executor
             loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(None, lambda: model.run(messages))
+            
+            if yandex_tools:
+                # Run with tools
+                result = await loop.run_in_executor(
+                    None, 
+                    lambda: model.run(messages, tools=yandex_tools)
+                )
+            else:
+                result = await loop.run_in_executor(None, lambda: model.run(messages))
             
             logger.info(f"YandexGPT result: {result}")
             
             # Process result - GPTModelResult has alternatives tuple
             for alternative in result.alternatives:
+                # Check for tool calls first
+                tool_calls_attr = getattr(alternative, 'tool_calls', None)
+                if tool_calls_attr:
+                    logger.info(f"YandexGPT tool_calls: {tool_calls_attr}")
+                    
+                    # Process each tool call
+                    lk_tool_calls = []
+                    for idx, tc in enumerate(tool_calls_attr):
+                        func_name = getattr(tc, 'name', None) or getattr(tc.function, 'name', None)
+                        func_args = getattr(tc, 'arguments', None) or getattr(tc.function, 'arguments', None)
+                        
+                        if func_name:
+                            # Convert arguments to JSON string if dict
+                            if isinstance(func_args, dict):
+                                func_args = json.dumps(func_args)
+                            elif func_args is None:
+                                func_args = "{}"
+                            
+                            lk_tool_calls.append(
+                                FunctionToolCall(
+                                    id=f"call_{request_id}_{idx}",
+                                    name=func_name,
+                                    arguments=func_args,
+                                )
+                            )
+                    
+                    if lk_tool_calls:
+                        chunk = ChatChunk(
+                            id=request_id,
+                            delta=ChoiceDelta(
+                                role="assistant",
+                                content="",
+                                tool_calls=lk_tool_calls,
+                            ),
+                            usage=None,
+                        )
+                        self._event_ch.send_nowait(chunk)
+                        continue
+                
+                # Regular text response
                 text = alternative.text
                 logger.info(f"YandexGPT response: {text[:100] if text else 'empty'}...")
                 
