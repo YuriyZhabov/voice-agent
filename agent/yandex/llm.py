@@ -94,33 +94,41 @@ class YandexLLM(llm.LLM):
         self,
         *,
         chat_ctx: llm.ChatContext,
-        tools: list[llm.FunctionTool | llm.RawFunctionTool] | None = None,
         conn_options: APIConnectOptions = APIConnectOptions(),
-        parallel_tool_calls: Any = None,
+        fnc_ctx: llm.function_context.FunctionContext | None = None,
+        temperature: float | None = None,
+        n: int | None = None,
+        parallel_tool_calls: bool | None = None,
         tool_choice: Any = None,
-        extra_kwargs: Any = None,
     ) -> "YandexLLMStream":
         """Generate chat completion.
         
         Args:
             chat_ctx: Chat context with message history
-            tools: Optional list of function tools
             conn_options: Connection options
+            fnc_ctx: Function context with callable functions
+            temperature: Ignored (uses instance setting)
+            n: Ignored
             parallel_tool_calls: Ignored for Yandex
             tool_choice: Ignored for Yandex
-            extra_kwargs: Ignored for Yandex
         
         Returns:
             YandexLLMStream for streaming response
         """
+        # Build tools list from fnc_ctx
+        tools_list = []
+        if fnc_ctx and fnc_ctx.ai_functions:
+            tools_list = list(fnc_ctx.ai_functions.values())
+        
         return YandexLLMStream(
-            llm=self,
+            llm_instance=self,
             chat_ctx=chat_ctx,
-            tools=tools or [],
+            fnc_ctx=fnc_ctx,
             conn_options=conn_options,
             credentials=self._credentials,
             opts=self._opts,
             sdk_getter=self._get_sdk,
+            tools_list=tools_list,
         )
 
 
@@ -177,8 +185,8 @@ def _convert_messages(chat_ctx: llm.ChatContext) -> list[dict[str, str]]:
     return messages
 
 
-def _convert_tools_to_yandex(tools: list) -> list[dict]:
-    """Convert LiveKit FunctionTools to YandexGPT tools format.
+def _convert_tools_to_yandex(tools_list: list) -> list[dict]:
+    """Convert LiveKit FunctionTool list to YandexGPT tools format.
     
     YandexGPT expects tools in format:
     {
@@ -195,38 +203,39 @@ def _convert_tools_to_yandex(tools: list) -> list[dict]:
     """
     import inspect
     
+    if not tools_list:
+        return []
+    
     yandex_tools = []
     
-    for tool in tools:
-        # Get tool info from LiveKit decorator
+    for tool in tools_list:
+        # Get tool info from @function_tool decorator
         tool_info = getattr(tool, "__livekit_tool_info", None)
         if not tool_info:
             continue
         
-        # Build parameters schema from function signature
+        tool_name = tool_info.name
+        tool_desc = tool_info.description or f"Function {tool_name}"
+        
+        # Build parameters from function signature
         properties = {}
         required = []
         
-        # Get the actual function (unwrap if needed)
+        # Get the actual function
         func = tool
         if hasattr(tool, "__wrapped__"):
             func = tool.__wrapped__
         
-        # Get function signature
         try:
             sig = inspect.signature(func)
-            type_hints = {}
-            try:
-                type_hints = func.__annotations__
-            except AttributeError:
-                pass
+            type_hints = getattr(func, "__annotations__", {})
             
             for param_name, param in sig.parameters.items():
-                # Skip 'context' parameter (RunContext)
+                # Skip context parameter
                 if param_name in ("context", "self", "cls"):
                     continue
                 
-                param_schema = {"type": "string"}  # Default type
+                param_schema = {"type": "string"}  # Default
                 
                 # Get type from annotations
                 param_type = type_hints.get(param_name)
@@ -241,25 +250,19 @@ def _convert_tools_to_yandex(tools: list) -> list[dict]:
                     elif type_name == "str":
                         param_schema["type"] = "string"
                 
-                # Add description from docstring if available
                 param_schema["description"] = f"Parameter {param_name}"
-                
                 properties[param_name] = param_schema
                 
                 # If no default, it's required
                 if param.default is inspect.Parameter.empty:
                     required.append(param_name)
-                else:
-                    param_schema["default"] = param.default
-                    
         except (ValueError, TypeError):
-            # Can't inspect, skip parameters
             pass
         
         yandex_tool = {
             "function": {
-                "name": tool_info.name,
-                "description": tool_info.description or f"Function {tool_info.name}",
+                "name": tool_name,
+                "description": tool_desc,
                 "parameters": {
                     "type": "object",
                     "properties": properties,
@@ -278,18 +281,20 @@ class YandexLLMStream(llm.LLMStream):
     def __init__(
         self,
         *,
-        llm: YandexLLM,
+        llm_instance: YandexLLM,
         chat_ctx: llm.ChatContext,
-        tools: list[llm.FunctionTool | llm.RawFunctionTool],
+        fnc_ctx: llm.function_context.FunctionContext | None,
         conn_options: APIConnectOptions,
         credentials: YandexCredentials,
         opts: _LLMOptions,
         sdk_getter,
+        tools_list: list,
     ) -> None:
-        super().__init__(llm=llm, chat_ctx=chat_ctx, tools=tools, conn_options=conn_options)
+        super().__init__(llm=llm_instance, chat_ctx=chat_ctx, fnc_ctx=fnc_ctx, conn_options=conn_options)
         self._credentials = credentials
         self._opts = opts
         self._sdk_getter = sdk_getter
+        self._tools_list = tools_list
 
     async def _run(self) -> None:
         """Stream tokens from YandexGPT."""
@@ -305,88 +310,110 @@ class YandexLLMStream(llm.LLMStream):
             return
         
         try:
-            # Get model and configure
-            model = sdk.models.completions(self._opts.model)
-            model = model.configure(temperature=self._opts.temperature)
-            
             # Generate unique request ID
             request_id = str(uuid.uuid4())
             
             # Convert tools to YandexGPT format
-            yandex_tools = _convert_tools_to_yandex(self._tools) if self._tools else []
+            yandex_tools = _convert_tools_to_yandex(self._tools_list)
             
             if yandex_tools:
                 logger.info(f"YandexGPT tools: {[t['function']['name'] for t in yandex_tools]}")
             
-            # Run completion - SDK is sync, run in executor
-            loop = asyncio.get_event_loop()
+            # Use REST API for function calling support
+            import httpx
             
+            api_url = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
+            
+            # Build request body
+            request_body = {
+                "modelUri": f"gpt://{self._credentials.folder_id}/{self._opts.model}",
+                "completionOptions": {
+                    "temperature": self._opts.temperature,
+                    "maxTokens": str(self._opts.max_tokens),
+                },
+                "messages": messages,
+            }
+            
+            # Add tools if available
             if yandex_tools:
-                # Run with tools
-                result = await loop.run_in_executor(
-                    None, 
-                    lambda: model.run(messages, tools=yandex_tools)
-                )
-            else:
-                result = await loop.run_in_executor(None, lambda: model.run(messages))
+                request_body["tools"] = yandex_tools
             
-            logger.info(f"YandexGPT result: {result}")
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Api-Key {self._credentials.api_key}",
+                "x-folder-id": self._credentials.folder_id,
+            }
             
-            # Process result - GPTModelResult has alternatives tuple
-            for alternative in result.alternatives:
-                # Check for tool calls first
-                tool_calls_attr = getattr(alternative, 'tool_calls', None)
-                if tool_calls_attr:
-                    logger.info(f"YandexGPT tool_calls: {tool_calls_attr}")
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(api_url, json=request_body, headers=headers)
+                response.raise_for_status()
+                result_data = response.json()
+            
+            logger.info(f"YandexGPT API result: {result_data}")
+            
+            # Process REST API result
+            alternatives = result_data.get("result", {}).get("alternatives", [])
+            
+            for alternative in alternatives:
+                message = alternative.get("message", {})
+                
+                # Check for tool calls (status = ALTERNATIVE_STATUS_TOOL_CALLS)
+                tool_call_list = message.get("toolCallList", {})
+                tool_calls = tool_call_list.get("toolCalls", [])
+                
+                if tool_calls:
+                    logger.info(f"YandexGPT tool_calls: {tool_calls}")
                     
-                    # Process each tool call
+                    # Process each tool call - create FunctionToolCall objects
                     lk_tool_calls = []
-                    for idx, tc in enumerate(tool_calls_attr):
-                        func_name = getattr(tc, 'name', None) or getattr(tc.function, 'name', None)
-                        func_args = getattr(tc, 'arguments', None) or getattr(tc.function, 'arguments', None)
+                    for idx, tc in enumerate(tool_calls):
+                        func_call = tc.get("functionCall", {})
+                        func_name = func_call.get("name")
+                        func_args = func_call.get("arguments", {})
                         
                         if func_name:
-                            # Convert arguments to JSON string if dict
+                            # Convert arguments to JSON string
                             if isinstance(func_args, dict):
-                                func_args = json.dumps(func_args)
-                            elif func_args is None:
-                                func_args = "{}"
+                                args_str = json.dumps(func_args)
+                            elif isinstance(func_args, str):
+                                args_str = func_args
+                            else:
+                                args_str = "{}"
                             
-                            lk_tool_calls.append(
-                                FunctionToolCall(
-                                    id=f"call_{request_id}_{idx}",
-                                    name=func_name,
-                                    arguments=func_args,
-                                )
+                            # Create FunctionToolCall
+                            tool_call = FunctionToolCall(
+                                call_id=f"call_{request_id}_{idx}",
+                                name=func_name,
+                                arguments=args_str,
                             )
+                            lk_tool_calls.append(tool_call)
+                            logger.info(f"Created FunctionToolCall: {func_name}({args_str})")
                     
+                    # Emit chunk with tool_calls
                     if lk_tool_calls:
                         chunk = ChatChunk(
                             id=request_id,
                             delta=ChoiceDelta(
                                 role="assistant",
-                                content="",
+                                content=None,
                                 tool_calls=lk_tool_calls,
                             ),
-                            usage=None,
                         )
                         self._event_ch.send_nowait(chunk)
-                        continue
+                        return  # Exit after emitting tool calls
                 
                 # Regular text response
-                text = alternative.text
+                text = message.get("text", "")
                 logger.info(f"YandexGPT response: {text[:100] if text else 'empty'}...")
                 
                 if text:
-                    # Emit chunk
+                    # Emit chunk with text content
                     chunk = ChatChunk(
                         id=request_id,
                         delta=ChoiceDelta(
                             role="assistant",
                             content=text,
-                            tool_calls=[],
                         ),
-                        usage=None,
                     )
                     self._event_ch.send_nowait(chunk)
                     
