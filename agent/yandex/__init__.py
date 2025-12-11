@@ -7,5 +7,6 @@ This module provides STT, TTS, and LLM plugins using Yandex Cloud services:
 """
 
 from agent.yandex.credentials import YandexCredentials
+from agent.yandex.stt import YandexSTT
 
-__all__ = ["YandexCredentials"]
+__all__ = ["YandexCredentials", "YandexSTT"]
