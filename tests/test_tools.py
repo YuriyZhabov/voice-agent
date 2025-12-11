@@ -179,8 +179,9 @@ class TestToolsMerge:
         from agent.tools import get_all_tools
         from agent.tools.core import TOOLS as CORE_TOOLS
         from agent.tools.time import TOOLS as TIME_TOOLS
+        from agent.tools.weather import TOOLS as WEATHER_TOOLS
         
         all_tools = get_all_tools()
-        expected_count = len(CORE_TOOLS) + len(TIME_TOOLS)
+        expected_count = len(CORE_TOOLS) + len(TIME_TOOLS) + len(WEATHER_TOOLS)
         
         assert len(all_tools) == expected_count
