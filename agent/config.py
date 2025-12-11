@@ -166,6 +166,81 @@ class AgentConfig(BaseSettings):
         description="Timeout for tool execution in seconds",
     )
     
+    # ============================================
+    # Yandex Cloud Configuration (optional)
+    # ============================================
+    
+    # Provider Selection - Requirements: 5.1, 5.2, 5.3
+    stt_provider: str = Field(
+        default="deepgram",
+        description="STT provider: 'deepgram' or 'yandex'",
+    )
+    tts_provider: str = Field(
+        default="cartesia",
+        description="TTS provider: 'cartesia', 'elevenlabs', or 'yandex'",
+    )
+    # Note: llm_provider already defined above (openai/groq/yandex)
+    
+    # Yandex Cloud Authentication - Requirements: 4.1, 4.2, 4.3
+    yc_api_key: str | None = Field(
+        default=None,
+        description="Yandex Cloud API key",
+    )
+    yc_iam_token: str | None = Field(
+        default=None,
+        description="Yandex Cloud IAM token (alternative to API key)",
+    )
+    yc_folder_id: str | None = Field(
+        default=None,
+        description="Yandex Cloud folder ID (required for billing)",
+    )
+    yc_sa_key_file: str | None = Field(
+        default=None,
+        description="Path to Yandex Cloud service account key file",
+    )
+    
+    # SpeechKit STT Configuration - Requirements: 1.1
+    yandex_stt_model: str = Field(
+        default="general",
+        description="SpeechKit STT model: 'general', 'general:rc'",
+    )
+    yandex_stt_language: str = Field(
+        default="ru-RU",
+        description="SpeechKit STT language code",
+    )
+    
+    # SpeechKit TTS Configuration - Requirements: 2.1
+    yandex_tts_voice: str = Field(
+        default="alena",
+        description="SpeechKit TTS voice: 'alena', 'filipp', 'ermil', 'jane', etc.",
+    )
+    yandex_tts_role: str = Field(
+        default="neutral",
+        description="SpeechKit TTS role: 'neutral', 'good', 'evil'",
+    )
+    yandex_tts_speed: float = Field(
+        default=1.0,
+        ge=0.1,
+        le=3.0,
+        description="SpeechKit TTS speed (0.1-3.0)",
+    )
+    yandex_tts_sample_rate: int = Field(
+        default=22050,
+        description="SpeechKit TTS sample rate: 8000, 16000, 22050, 48000",
+    )
+    
+    # YandexGPT Configuration - Requirements: 3.1
+    yandex_llm_model: str = Field(
+        default="yandexgpt-lite",
+        description="YandexGPT model: 'yandexgpt-lite' or 'yandexgpt'",
+    )
+    yandex_llm_temperature: float = Field(
+        default=0.6,
+        ge=0.0,
+        le=1.0,
+        description="YandexGPT temperature (0.0-1.0)",
+    )
+    
     @field_validator("livekit_url")
     @classmethod
     def validate_livekit_url(cls, v: str) -> str:
