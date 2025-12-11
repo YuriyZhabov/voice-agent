@@ -1,0 +1,24 @@
+name: voice-agent-prod
+
+services:
+  voice-agent:
+    image: cr.yandex/${YC_REGISTRY_ID}/voice-agent:latest
+    container_name: voice-agent
+    env_file:
+      - .env.prod
+    ports:
+      - "8081:8081"
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+        reservations:
+          cpus: '1'
+          memory: 2G
