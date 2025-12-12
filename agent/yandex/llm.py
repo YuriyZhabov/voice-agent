@@ -371,15 +371,13 @@ class YandexLLMStream(llm.LLMStream):
                 if tool_calls and status == "ALTERNATIVE_STATUS_TOOL_CALLS":
                     logger.info(f"YandexGPT tool_calls: {tool_calls}")
                     
-                    # Emit "thinking" message for TTS
-                    thinking_chunk = ChatChunk(
-                        id=request_id,
-                        delta=ChoiceDelta(role="assistant", content="Секунду, проверяю..."),
-                    )
-                    self._event_ch.send_nowait(thinking_chunk)
-                    
-                    # Execute all tools using universal executor
+                    # Execute tools and measure time
+                    import time
+                    start_time = time.monotonic()
                     tool_results = await self._executor.execute_batch(tool_calls)
+                    execution_time = time.monotonic() - start_time
+                    
+                    logger.info(f"Tool execution took {execution_time:.2f}s")
                     
                     # Build second request with tool results
                     # Add assistant's toolCallList and user's toolResultList to messages
@@ -413,6 +411,11 @@ class YandexLLMStream(llm.LLMStream):
                         msg = alt.get("message", {})
                         text = msg.get("text", "")
                         if text:
+                            # Add "thinking" prefix only if tool execution was slow (>1s)
+                            if execution_time > 1.0:
+                                text = "Секунду, проверяю... " + text
+                                logger.info(f"Added thinking prefix (execution took {execution_time:.2f}s)")
+                            
                             logger.info(f"Final response: {text[:100]}...")
                             chunk = ChatChunk(
                                 id=request_id,
