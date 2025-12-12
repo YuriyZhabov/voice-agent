@@ -95,7 +95,8 @@ class YandexLLM(llm.LLM):
         *,
         chat_ctx: llm.ChatContext,
         conn_options: APIConnectOptions = APIConnectOptions(),
-        fnc_ctx: llm.function_context.FunctionContext | None = None,
+        fnc_ctx: Any = None,
+        tools: list | None = None,
         temperature: float | None = None,
         n: int | None = None,
         parallel_tool_calls: bool | None = None,
@@ -106,7 +107,8 @@ class YandexLLM(llm.LLM):
         Args:
             chat_ctx: Chat context with message history
             conn_options: Connection options
-            fnc_ctx: Function context with callable functions
+            fnc_ctx: Function context (legacy, ignored)
+            tools: List of FunctionTool objects
             temperature: Ignored (uses instance setting)
             n: Ignored
             parallel_tool_calls: Ignored for Yandex
@@ -115,15 +117,12 @@ class YandexLLM(llm.LLM):
         Returns:
             YandexLLMStream for streaming response
         """
-        # Build tools list from fnc_ctx
-        tools_list = []
-        if fnc_ctx and fnc_ctx.ai_functions:
-            tools_list = list(fnc_ctx.ai_functions.values())
+        # Use tools parameter directly (new API in 1.3.6)
+        tools_list = tools or []
         
         return YandexLLMStream(
             llm_instance=self,
             chat_ctx=chat_ctx,
-            fnc_ctx=fnc_ctx,
             conn_options=conn_options,
             credentials=self._credentials,
             opts=self._opts,
@@ -283,22 +282,62 @@ class YandexLLMStream(llm.LLMStream):
         *,
         llm_instance: YandexLLM,
         chat_ctx: llm.ChatContext,
-        fnc_ctx: llm.function_context.FunctionContext | None,
         conn_options: APIConnectOptions,
         credentials: YandexCredentials,
         opts: _LLMOptions,
         sdk_getter,
         tools_list: list,
     ) -> None:
-        super().__init__(llm=llm_instance, chat_ctx=chat_ctx, fnc_ctx=fnc_ctx, conn_options=conn_options)
+        # SDK 1.3.6 signature: LLMStream(llm, *, chat_ctx, tools, conn_options)
+        super().__init__(
+            llm=llm_instance,
+            chat_ctx=chat_ctx,
+            tools=tools_list,
+            conn_options=conn_options,
+        )
         self._credentials = credentials
         self._opts = opts
         self._sdk_getter = sdk_getter
         self._tools_list = tools_list
 
+    def _build_tools_map(self) -> dict:
+        """Build a map of tool name -> tool function for execution."""
+        tools_map = {}
+        for tool in self._tools_list:
+            tool_info = getattr(tool, "__livekit_tool_info", None)
+            if tool_info:
+                tools_map[tool_info.name] = tool
+        return tools_map
+
+    async def _execute_tool(self, func_name: str, func_args: dict) -> str:
+        """Execute a tool function and return the result as string."""
+        tools_map = self._build_tools_map()
+        
+        if func_name not in tools_map:
+            logger.warning(f"Tool not found: {func_name}")
+            return f"Error: Tool '{func_name}' not found"
+        
+        tool_func = tools_map[func_name]
+        
+        try:
+            # Create a minimal context for the tool
+            # Tools expect RunContext but we pass None for now
+            result = await tool_func(None, **func_args)
+            logger.info(f"Tool {func_name} returned: {result}")
+            return str(result) if result else "OK"
+        except Exception as e:
+            logger.error(f"Tool {func_name} error: {e}", exc_info=True)
+            return f"Error executing {func_name}: {str(e)}"
+
     async def _run(self) -> None:
-        """Stream tokens from YandexGPT."""
-        sdk = self._sdk_getter()
+        """Stream tokens from YandexGPT with function calling support.
+        
+        YandexGPT function calling works differently from OpenAI:
+        1. First request -> model returns toolCallList
+        2. We execute the function ourselves
+        3. Second request with toolResultList -> model generates final response
+        """
+        import httpx
         
         # Convert messages
         messages = _convert_messages(self._chat_ctx)
@@ -310,21 +349,20 @@ class YandexLLMStream(llm.LLMStream):
             return
         
         try:
-            # Generate unique request ID
             request_id = str(uuid.uuid4())
-            
-            # Convert tools to YandexGPT format
             yandex_tools = _convert_tools_to_yandex(self._tools_list)
             
             if yandex_tools:
                 logger.info(f"YandexGPT tools: {[t['function']['name'] for t in yandex_tools]}")
             
-            # Use REST API for function calling support
-            import httpx
-            
             api_url = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Api-Key {self._credentials.api_key}",
+                "x-folder-id": self._credentials.folder_id,
+            }
             
-            # Build request body
+            # Build initial request
             request_body = {
                 "modelUri": f"gpt://{self._credentials.folder_id}/{self._opts.model}",
                 "completionOptions": {
@@ -334,86 +372,102 @@ class YandexLLMStream(llm.LLMStream):
                 "messages": messages,
             }
             
-            # Add tools if available
             if yandex_tools:
                 request_body["tools"] = yandex_tools
             
-            headers = {
-                "Content-Type": "application/json",
-                "Authorization": f"Api-Key {self._credentials.api_key}",
-                "x-folder-id": self._credentials.folder_id,
-            }
-            
             async with httpx.AsyncClient(timeout=30.0) as client:
+                # First API call
                 response = await client.post(api_url, json=request_body, headers=headers)
                 response.raise_for_status()
                 result_data = response.json()
             
             logger.info(f"YandexGPT API result: {result_data}")
             
-            # Process REST API result
             alternatives = result_data.get("result", {}).get("alternatives", [])
             
             for alternative in alternatives:
                 message = alternative.get("message", {})
+                status = alternative.get("status", "")
                 
-                # Check for tool calls (status = ALTERNATIVE_STATUS_TOOL_CALLS)
+                # Check for tool calls
                 tool_call_list = message.get("toolCallList", {})
                 tool_calls = tool_call_list.get("toolCalls", [])
                 
-                if tool_calls:
+                if tool_calls and status == "ALTERNATIVE_STATUS_TOOL_CALLS":
                     logger.info(f"YandexGPT tool_calls: {tool_calls}")
                     
-                    # Process each tool call - create FunctionToolCall objects
-                    lk_tool_calls = []
-                    for idx, tc in enumerate(tool_calls):
+                    # Emit "thinking" message for TTS
+                    thinking_chunk = ChatChunk(
+                        id=request_id,
+                        delta=ChoiceDelta(role="assistant", content="Секунду, проверяю..."),
+                    )
+                    self._event_ch.send_nowait(thinking_chunk)
+                    
+                    # Execute each tool and collect results
+                    tool_results = []
+                    for tc in tool_calls:
                         func_call = tc.get("functionCall", {})
                         func_name = func_call.get("name")
                         func_args = func_call.get("arguments", {})
                         
                         if func_name:
-                            # Convert arguments to JSON string
-                            if isinstance(func_args, dict):
-                                args_str = json.dumps(func_args)
-                            elif isinstance(func_args, str):
-                                args_str = func_args
-                            else:
-                                args_str = "{}"
-                            
-                            # Create FunctionToolCall
-                            tool_call = FunctionToolCall(
-                                call_id=f"call_{request_id}_{idx}",
-                                name=func_name,
-                                arguments=args_str,
-                            )
-                            lk_tool_calls.append(tool_call)
-                            logger.info(f"Created FunctionToolCall: {func_name}({args_str})")
+                            logger.info(f"Executing tool: {func_name}({func_args})")
+                            result = await self._execute_tool(func_name, func_args)
+                            tool_results.append({
+                                "functionResult": {
+                                    "name": func_name,
+                                    "content": result,
+                                }
+                            })
                     
-                    # Emit chunk with tool_calls
-                    if lk_tool_calls:
-                        chunk = ChatChunk(
-                            id=request_id,
-                            delta=ChoiceDelta(
-                                role="assistant",
-                                content=None,
-                                tool_calls=lk_tool_calls,
-                            ),
-                        )
-                        self._event_ch.send_nowait(chunk)
-                        return  # Exit after emitting tool calls
+                    # Build second request with tool results
+                    # Add assistant's toolCallList and user's toolResultList to messages
+                    messages_with_results = messages.copy()
+                    messages_with_results.append({
+                        "role": "assistant",
+                        "toolCallList": tool_call_list,
+                    })
+                    messages_with_results.append({
+                        "role": "user",
+                        "toolResultList": {
+                            "toolResults": tool_results,
+                        }
+                    })
+                    
+                    logger.info(f"Sending second request with tool results: {tool_results}")
+                    
+                    # Second API call with tool results
+                    request_body["messages"] = messages_with_results
+                    
+                    async with httpx.AsyncClient(timeout=30.0) as client:
+                        response = await client.post(api_url, json=request_body, headers=headers)
+                        response.raise_for_status()
+                        result_data = response.json()
+                    
+                    logger.info(f"YandexGPT second response: {result_data}")
+                    
+                    # Process final response
+                    alternatives = result_data.get("result", {}).get("alternatives", [])
+                    for alt in alternatives:
+                        msg = alt.get("message", {})
+                        text = msg.get("text", "")
+                        if text:
+                            logger.info(f"Final response: {text[:100]}...")
+                            chunk = ChatChunk(
+                                id=request_id,
+                                delta=ChoiceDelta(role="assistant", content=text),
+                            )
+                            self._event_ch.send_nowait(chunk)
+                    return
                 
-                # Regular text response
+                # Regular text response (no tool calls)
                 text = message.get("text", "")
                 logger.info(f"YandexGPT response: {text[:100] if text else 'empty'}...")
                 
                 if text:
-                    # Emit chunk with text content
                     chunk = ChatChunk(
                         id=request_id,
-                        delta=ChoiceDelta(
-                            role="assistant",
-                            content=text,
-                        ),
+                        delta=ChoiceDelta(role="assistant", content=text),
                     )
                     self._event_ch.send_nowait(chunk)
                     
