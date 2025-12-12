@@ -1,0 +1,49 @@
+# LiveKit Server Configuration
+# Documentation: https://docs.livekit.io/realtime/self-hosting/deployment/
+
+port: 7880
+bind_addresses:
+  - ""
+
+rtc:
+  port_range_start: 50000
+  port_range_end: 60000
+  tcp_port: 7881
+  use_external_ip: true
+  # Будет автоматически определён
+  # node_ip: ""
+
+# Встроенный TURN сервер
+turn:
+  enabled: true
+  domain: livekit.agentio.pro
+  tls_port: 443
+  udp_port: 443
+  # Внешний IP будет определён автоматически
+  # external_tls: true
+
+# API ключи (переопределяются через LIVEKIT_KEYS env)
+keys:
+  # Формат: api_key: api_secret
+  # Генерация: openssl rand -base64 32
+  devkey: secret
+
+# Логирование
+logging:
+  level: info
+  json: true
+  sample: true
+
+# Prometheus метрики
+prometheus_port: 6789
+
+# Лимиты
+limit:
+  num_tracks: 50
+  bytes_per_sec: 10000000  # 10 MB/s
+
+# Webhook (опционально)
+# webhook:
+#   urls:
+#     - https://your-webhook-url.com/livekit
+#   api_key: webhook_key

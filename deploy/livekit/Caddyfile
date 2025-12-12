@@ -1,0 +1,28 @@
+# Caddy configuration for LiveKit
+# Автоматический SSL через Let's Encrypt
+
+livekit.agentio.pro {
+    # Reverse proxy на LiveKit API
+    reverse_proxy localhost:7880
+
+    # Логирование
+    log {
+        output file /var/log/caddy/access.log
+        format json
+    }
+
+    # Headers для WebSocket
+    header {
+        # CORS для WebRTC
+        Access-Control-Allow-Origin *
+        Access-Control-Allow-Methods "GET, POST, OPTIONS"
+        Access-Control-Allow-Headers "Content-Type, Authorization"
+    }
+
+    # TLS настройки
+    tls {
+        protocols tls1.2 tls1.3
+    }
+}
+
+# HTTP → HTTPS редирект (автоматически)

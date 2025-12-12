@@ -1,0 +1,51 @@
+version: "3.9"
+
+services:
+  # LiveKit Server
+  livekit:
+    image: livekit/livekit-server:latest
+    container_name: livekit-server
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro
+    environment:
+      - LIVEKIT_CONFIG=/etc/livekit.yaml
+      - LIVEKIT_KEYS=${LIVEKIT_KEYS}
+    command: ["--config", "/etc/livekit.yaml"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:7880/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Caddy - Reverse Proxy с автоматическим SSL
+  caddy:
+    image: caddy:latest
+    container_name: caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - livekit
+    healthcheck:
+      test: ["CMD", "caddy", "validate", "--config", "/etc/caddy/Caddyfile"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  caddy_data:
+  caddy_config:
+
+# Примечания:
+# 1. LiveKit использует network_mode: host для WebRTC
+# 2. Caddy автоматически получает SSL сертификат от Let's Encrypt
+# 3. LIVEKIT_KEYS задаётся в .env файле
+# 4. Формат LIVEKIT_KEYS: "api_key: api_secret"
