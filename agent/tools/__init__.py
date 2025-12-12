@@ -49,4 +49,6 @@ def get_all_tools() -> list["FunctionTool"]:
     return all_tools
 
 
-__all__ = ["get_all_tools", "_get_tool_name"]
+from agent.tools.executor import ToolExecutor, get_executor, reset_executor
+
+__all__ = ["get_all_tools", "_get_tool_name", "ToolExecutor", "get_executor", "reset_executor"]

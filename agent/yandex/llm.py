@@ -299,35 +299,10 @@ class YandexLLMStream(llm.LLMStream):
         self._opts = opts
         self._sdk_getter = sdk_getter
         self._tools_list = tools_list
-
-    def _build_tools_map(self) -> dict:
-        """Build a map of tool name -> tool function for execution."""
-        tools_map = {}
-        for tool in self._tools_list:
-            tool_info = getattr(tool, "__livekit_tool_info", None)
-            if tool_info:
-                tools_map[tool_info.name] = tool
-        return tools_map
-
-    async def _execute_tool(self, func_name: str, func_args: dict) -> str:
-        """Execute a tool function and return the result as string."""
-        tools_map = self._build_tools_map()
         
-        if func_name not in tools_map:
-            logger.warning(f"Tool not found: {func_name}")
-            return f"Error: Tool '{func_name}' not found"
-        
-        tool_func = tools_map[func_name]
-        
-        try:
-            # Create a minimal context for the tool
-            # Tools expect RunContext but we pass None for now
-            result = await tool_func(None, **func_args)
-            logger.info(f"Tool {func_name} returned: {result}")
-            return str(result) if result else "OK"
-        except Exception as e:
-            logger.error(f"Tool {func_name} error: {e}", exc_info=True)
-            return f"Error executing {func_name}: {str(e)}"
+        # Initialize tool executor with provided tools
+        from agent.tools.executor import ToolExecutor
+        self._executor = ToolExecutor(tools_list)
 
     async def _run(self) -> None:
         """Stream tokens from YandexGPT with function calling support.
@@ -403,22 +378,8 @@ class YandexLLMStream(llm.LLMStream):
                     )
                     self._event_ch.send_nowait(thinking_chunk)
                     
-                    # Execute each tool and collect results
-                    tool_results = []
-                    for tc in tool_calls:
-                        func_call = tc.get("functionCall", {})
-                        func_name = func_call.get("name")
-                        func_args = func_call.get("arguments", {})
-                        
-                        if func_name:
-                            logger.info(f"Executing tool: {func_name}({func_args})")
-                            result = await self._execute_tool(func_name, func_args)
-                            tool_results.append({
-                                "functionResult": {
-                                    "name": func_name,
-                                    "content": result,
-                                }
-                            })
+                    # Execute all tools using universal executor
+                    tool_results = await self._executor.execute_batch(tool_calls)
                     
                     # Build second request with tool results
                     # Add assistant's toolCallList and user's toolResultList to messages
