@@ -50,5 +50,28 @@ def get_all_tools() -> list["FunctionTool"]:
 
 
 from agent.tools.executor import ToolExecutor, get_executor, reset_executor
+from agent.tools.models import (
+    FunctionCall,
+    FunctionResult,
+    ToolCall,
+    ToolResult,
+    ToolCallList,
+    ToolResultList,
+)
 
-__all__ = ["get_all_tools", "_get_tool_name", "ToolExecutor", "get_executor", "reset_executor"]
+__all__ = [
+    # Tool discovery
+    "get_all_tools",
+    "_get_tool_name",
+    # Executor
+    "ToolExecutor",
+    "get_executor",
+    "reset_executor",
+    # Pydantic models
+    "FunctionCall",
+    "FunctionResult",
+    "ToolCall",
+    "ToolResult",
+    "ToolCallList",
+    "ToolResultList",
+]

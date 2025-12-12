@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import grpc
@@ -16,6 +15,7 @@ import grpc
 from livekit.agents import stt, APIConnectOptions, utils
 
 from agent.yandex.credentials import YandexCredentials
+from agent.yandex.models import STTOptions
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -24,15 +24,6 @@ logger = logging.getLogger(__name__)
 
 # SpeechKit gRPC endpoints
 STT_ENDPOINT = "stt.api.cloud.yandex.net:443"
-
-
-@dataclass
-class _STTOptions:
-    """Internal options for STT configuration."""
-    language: str
-    model: str
-    profanity_filter: bool
-    sample_rate: int
 
 
 class YandexSTT(stt.STT):
@@ -67,7 +58,7 @@ class YandexSTT(stt.STT):
         )
         
         self._credentials = credentials or YandexCredentials.from_env()
-        self._opts = _STTOptions(
+        self._opts = STTOptions(
             language=language,
             model=model,
             profanity_filter=profanity_filter,
@@ -127,7 +118,7 @@ class YandexSTT(stt.STT):
         Returns:
             YandexSTTStream instance for streaming recognition
         """
-        opts = _STTOptions(
+        opts = STTOptions(
             language=language or self._opts.language,
             model=self._opts.model,
             profanity_filter=self._opts.profanity_filter,
@@ -149,7 +140,7 @@ class YandexSTTStream(stt.RecognizeStream):
         *,
         stt: YandexSTT,
         credentials: YandexCredentials,
-        opts: _STTOptions,
+        opts: STTOptions,
         conn_options: APIConnectOptions,
     ) -> None:
         super().__init__(stt=stt, conn_options=conn_options, sample_rate=opts.sample_rate)

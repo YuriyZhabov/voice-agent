@@ -9,23 +9,15 @@ import asyncio
 import json
 import logging
 import uuid
-from dataclasses import dataclass
 from typing import Any
 
 from livekit.agents import llm, APIConnectOptions
 from livekit.agents.llm import ChatChunk, ChoiceDelta, FunctionToolCall
 
 from agent.yandex.credentials import YandexCredentials
+from agent.yandex.models import LLMOptions
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class _LLMOptions:
-    """Internal options for LLM configuration."""
-    model: str
-    temperature: float
-    max_tokens: int
 
 
 class YandexLLM(llm.LLM):
@@ -63,7 +55,7 @@ class YandexLLM(llm.LLM):
         super().__init__()
         
         self._credentials = credentials or YandexCredentials.from_env()
-        self._opts = _LLMOptions(
+        self._opts = LLMOptions(
             model=model,
             temperature=temperature,
             max_tokens=max_tokens,
@@ -284,7 +276,7 @@ class YandexLLMStream(llm.LLMStream):
         chat_ctx: llm.ChatContext,
         conn_options: APIConnectOptions,
         credentials: YandexCredentials,
-        opts: _LLMOptions,
+        opts: LLMOptions,
         sdk_getter,
         tools_list: list,
     ) -> None:

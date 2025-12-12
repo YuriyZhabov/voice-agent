@@ -6,28 +6,18 @@ Implements streaming speech synthesis using SpeechKit API v3 via gRPC.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 
 import grpc
 
 from livekit.agents import tts, APIConnectOptions
 
 from agent.yandex.credentials import YandexCredentials
+from agent.yandex.models import TTSOptions
 
 logger = logging.getLogger(__name__)
 
 # SpeechKit gRPC endpoints
 TTS_ENDPOINT = "tts.api.cloud.yandex.net:443"
-
-
-@dataclass
-class _TTSOptions:
-    """Internal options for TTS configuration."""
-    voice: str
-    role: str
-    speed: float
-    sample_rate: int
-    format: str
 
 
 class YandexTTS(tts.TTS):
@@ -65,7 +55,7 @@ class YandexTTS(tts.TTS):
         )
         
         self._credentials = credentials or YandexCredentials.from_env()
-        self._opts = _TTSOptions(
+        self._opts = TTSOptions(
             voice=voice,
             role=role,
             speed=speed,
@@ -127,7 +117,7 @@ class YandexTTSChunkedStream(tts.ChunkedStream):
         input_text: str,
         conn_options: APIConnectOptions,
         credentials: YandexCredentials,
-        opts: _TTSOptions,
+        opts: TTSOptions,
     ) -> None:
         super().__init__(tts=tts, input_text=input_text, conn_options=conn_options)
         self._credentials = credentials
@@ -136,6 +126,8 @@ class YandexTTSChunkedStream(tts.ChunkedStream):
     
     async def _run(self, output_emitter: tts.AudioEmitter) -> None:
         """Synthesize and emit audio chunks."""
+        import time
+        
         try:
             from yandex.cloud.ai.tts.v3 import tts_service_pb2_grpc
             from yandex.cloud.ai.tts.v3 import tts_pb2
@@ -166,13 +158,18 @@ class YandexTTSChunkedStream(tts.ChunkedStream):
             )
             
             metadata = self._credentials.get_grpc_metadata()
+            
+            start_time = time.monotonic()
             responses = stub.UtteranceSynthesis(request, metadata=metadata)
             
             # CRITICAL: Initialize emitter before pushing audio data
             first_chunk = True
+            ttfb = None  # Time to first byte
             async for response in responses:
                 if response.HasField("audio_chunk"):
                     if first_chunk:
+                        ttfb = time.monotonic() - start_time
+                        logger.info(f"TTS TTFB: {ttfb:.3f}s for text: {self._input_text[:50]}...")
                         output_emitter.initialize(
                             request_id=self._input_text[:32],
                             sample_rate=self._opts.sample_rate,
@@ -181,6 +178,9 @@ class YandexTTSChunkedStream(tts.ChunkedStream):
                         )
                         first_chunk = False
                     output_emitter.push(response.audio_chunk.data)
+            
+            total_time = time.monotonic() - start_time
+            logger.info(f"TTS total: {total_time:.3f}s (TTFB: {ttfb:.3f}s)")
                     
         except grpc.aio.AioRpcError as e:
             logger.error(f"SpeechKit TTS error: {e.code()} - {e.details()}")
@@ -199,7 +199,7 @@ class YandexTTSSynthesizeStream(tts.SynthesizeStream):
         tts: YandexTTS,
         conn_options: APIConnectOptions,
         credentials: YandexCredentials,
-        opts: _TTSOptions,
+        opts: TTSOptions,
     ) -> None:
         super().__init__(tts=tts, conn_options=conn_options)
         self._credentials = credentials
@@ -253,10 +253,18 @@ class YandexTTSSynthesizeStream(tts.SynthesizeStream):
                 )
                 
                 metadata = self._credentials.get_grpc_metadata()
+                
+                import time
+                start_time = time.monotonic()
                 responses = stub.UtteranceSynthesis(request, metadata=metadata)
                 
+                first_chunk_for_segment = True
                 async for response in responses:
                     if response.HasField("audio_chunk"):
+                        if first_chunk_for_segment:
+                            ttfb = time.monotonic() - start_time
+                            logger.info(f"TTS stream TTFB: {ttfb:.3f}s for: {text[:30]}...")
+                            first_chunk_for_segment = False
                         # Initialize emitter on first audio chunk
                         if not emitter_initialized:
                             output_emitter.initialize(
