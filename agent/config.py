@@ -1,7 +1,6 @@
 """Agent configuration module using Pydantic Settings.
 
 Loads configuration from environment variables with validation.
-Requirements: 5.1, 5.2, 5.3
 """
 
 from pydantic import Field, field_validator
@@ -9,11 +8,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class AgentConfig(BaseSettings):
-    """Agent configuration from environment variables.
-    
-    All required fields must be set via environment variables or .env file.
-    Optional fields have sensible defaults.
-    """
+    """Agent configuration from environment variables."""
     
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -21,135 +16,29 @@ class AgentConfig(BaseSettings):
         extra="ignore",
     )
     
-    # LiveKit (required) - Requirements: 5.1
+    # LiveKit (required)
     livekit_url: str = Field(
         ...,
         description="LiveKit server WebSocket URL",
         examples=["wss://your-server.livekit.cloud"],
     )
-    livekit_api_key: str = Field(
-        ...,
-        description="LiveKit API key",
-    )
-    livekit_api_secret: str = Field(
-        ...,
-        description="LiveKit API secret",
-    )
+    livekit_api_key: str = Field(..., description="LiveKit API key")
+    livekit_api_secret: str = Field(..., description="LiveKit API secret")
     
-    # Agent Configuration - Requirements: 5.1
+    # Agent Configuration
     agent_system_prompt: str = Field(
         default="Ты полезный голосовой ассистент. Отвечай кратко и по делу.",
         description="System prompt for the agent",
     )
-    
-    # STT - Deepgram (required if stt_provider=deepgram)
-    deepgram_api_key: str = Field(
-        default="",
-        description="Deepgram API key for speech-to-text",
-    )
-    
-    # LLM Provider Selection
-    llm_provider: str = Field(
-        default="openai",
-        description="LLM provider: 'groq' or 'openai'",
-    )
-    
-    # LLM - OpenAI-compatible API (required if llm_provider=openai)
-    openai_api_key: str = Field(
-        default="",
-        description="OpenAI-compatible API key (e.g., CometAPI)",
-    )
-    openai_base_url: str = Field(
-        default="https://api.openai.com/v1",
-        description="OpenAI-compatible API base URL",
-        examples=["https://api.cometapi.com/v1", "https://api.openai.com/v1"],
-    )
-    openai_model: str = Field(
-        default="gpt-4o-mini",
-        description="Model to use (e.g., gpt-4o-mini)",
-    )
-    
-    # LLM - Groq (required if llm_provider=groq)
-    groq_api_key: str = Field(
-        default="",
-        description="Groq API key for fast LLM inference",
-    )
-    groq_model: str = Field(
-        default="llama-3.3-70b-versatile",
-        description="Groq model to use",
-    )
-
-    # TTS - ElevenLabs (optional) - Requirements: 5.2
-    eleven_api_key: str = Field(
-        default="",
-        description="ElevenLabs API key for text-to-speech",
-    )
-    elevenlabs_voice_id: str = Field(
-        default="alex",
-        description="ElevenLabs voice ID to use",
-    )
-    
-    # TTS - Cartesia (optional)
-    cartesia_api_key: str = Field(
-        default="",
-        description="Cartesia API key for text-to-speech",
-    )
-    cartesia_voice_id: str = Field(
-        default="794f9389-aac1-45b6-b726-9d9369183238",
-        description="Cartesia voice ID to use",
-    )
-    
-    # n8n MCP Integration (optional) - Requirements: 5.3
-    n8n_mcp_url: str | None = Field(
-        default=None,
-        description="n8n MCP server URL for tool integration",
-        examples=["http://localhost:5678/mcp"],
-    )
-    
-    # Smithery MCP Integration (optional)
-    smithery_api_key: str | None = Field(
-        default=None,
-        description="Smithery API key for MCP server access",
-    )
-    smithery_servers: str | None = Field(
-        default=None,
-        description="Comma-separated list of Smithery server names (e.g., 'exa,@anthropic/brave-search')",
-    )
-    
-    # SIP Telephony - LiveKit (optional) - Requirements: 1.1, 1.2
-    sip_trunk_id: str | None = Field(
-        default=None,
-        description="LiveKit SIP trunk ID for incoming calls",
-    )
-    sip_phone_number: str | None = Field(
-        default=None,
-        description="Phone number for incoming SIP calls (+7XXXXXXXXXX)",
-    )
     agent_name: str = Field(
-        default="voice-agent-mvp",
+        default="voice-agent",
         description="Agent name for LiveKit dispatch rules",
     )
     
-    # MTS Exolve Configuration (optional) - Requirements: 1.1, 1.2
-    exolve_api_key: str | None = Field(
+    # n8n MCP Integration (optional)
+    n8n_mcp_url: str | None = Field(
         default=None,
-        description="MTS Exolve API key from dev.exolve.ru",
-    )
-    exolve_sip_resource_id: str | None = Field(
-        default=None,
-        description="MTS Exolve SIP resource ID",
-    )
-    exolve_phone_number: str | None = Field(
-        default=None,
-        description="MTS Exolve phone number (+7XXXXXXXXXX)",
-    )
-    exolve_sip_username: str | None = Field(
-        default=None,
-        description="MTS Exolve SIP username (format: 883140XXXXXXXXXX)",
-    )
-    exolve_sip_domain: str = Field(
-        default="sip.exolve.ru",
-        description="MTS Exolve SIP domain",
+        description="n8n MCP server URL for tool integration",
     )
     
     # Timeouts
@@ -167,39 +56,22 @@ class AgentConfig(BaseSettings):
     )
     
     # ============================================
-    # Yandex Cloud Configuration (optional)
+    # Yandex Cloud Configuration
     # ============================================
     
-    # Provider Selection - Requirements: 5.1, 5.2, 5.3
-    stt_provider: str = Field(
-        default="deepgram",
-        description="STT provider: 'deepgram' or 'yandex'",
-    )
-    tts_provider: str = Field(
-        default="cartesia",
-        description="TTS provider: 'cartesia', 'elevenlabs', or 'yandex'",
-    )
-    # Note: llm_provider already defined above (openai/groq/yandex)
-    
-    # Yandex Cloud Authentication - Requirements: 4.1, 4.2, 4.3
+    # Yandex Cloud Authentication
     yc_api_key: str | None = Field(
         default=None,
+        alias="YANDEX_API_KEY",
         description="Yandex Cloud API key",
-    )
-    yc_iam_token: str | None = Field(
-        default=None,
-        description="Yandex Cloud IAM token (alternative to API key)",
     )
     yc_folder_id: str | None = Field(
         default=None,
+        alias="YANDEX_FOLDER_ID",
         description="Yandex Cloud folder ID (required for billing)",
     )
-    yc_sa_key_file: str | None = Field(
-        default=None,
-        description="Path to Yandex Cloud service account key file",
-    )
     
-    # SpeechKit STT Configuration - Requirements: 1.1
+    # SpeechKit STT Configuration
     yandex_stt_model: str = Field(
         default="general",
         description="SpeechKit STT model: 'general', 'general:rc'",
@@ -209,7 +81,7 @@ class AgentConfig(BaseSettings):
         description="SpeechKit STT language code",
     )
     
-    # SpeechKit TTS Configuration - Requirements: 2.1
+    # SpeechKit TTS Configuration
     yandex_tts_voice: str = Field(
         default="alena",
         description="SpeechKit TTS voice: 'alena', 'filipp', 'ermil', 'jane', etc.",
@@ -229,9 +101,9 @@ class AgentConfig(BaseSettings):
         description="SpeechKit TTS sample rate: 8000, 16000, 22050, 48000",
     )
     
-    # YandexGPT Configuration - Requirements: 3.1
+    # YandexGPT Configuration
     yandex_llm_model: str = Field(
-        default="yandexgpt-lite",
+        default="yandexgpt",
         description="YandexGPT model: 'yandexgpt-lite' or 'yandexgpt'",
     )
     yandex_llm_temperature: float = Field(
@@ -259,15 +131,5 @@ class AgentConfig(BaseSettings):
 
 
 def load_config(env_file: str = ".env") -> AgentConfig:
-    """Load and validate agent configuration from environment.
-    
-    Args:
-        env_file: Path to .env file (default: ".env")
-    
-    Returns:
-        AgentConfig: Validated configuration object.
-        
-    Raises:
-        ValidationError: If required fields are missing or invalid.
-    """
+    """Load and validate agent configuration from environment."""
     return AgentConfig(_env_file=env_file)

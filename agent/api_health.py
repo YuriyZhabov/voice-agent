@@ -1,17 +1,12 @@
-"""API health check module for Voice Agent MVP.
+"""API health check module for Voice Agent.
 
-Validates connectivity to all external APIs:
+Validates connectivity to external APIs:
 - LiveKit (WebRTC infrastructure)
-- Deepgram (STT)
-- OpenAI/CometAPI (LLM)
-- ElevenLabs (TTS)
-
-Requirements: 5.1, 5.2, 5.3
+- Yandex Cloud (STT, TTS, LLM)
 """
 
 import asyncio
 from dataclasses import dataclass
-from typing import Any
 
 import httpx
 
@@ -49,18 +44,14 @@ class AllHealthChecks:
 async def check_livekit(config: AgentConfig) -> HealthCheckResult:
     """Check LiveKit API connectivity."""
     try:
-        # LiveKit uses livekit-api package for REST API
-        # For health check, we verify the URL is reachable via HTTP
         http_url = config.livekit_url.replace("wss://", "https://").replace("ws://", "http://")
         
         async with httpx.AsyncClient(timeout=10.0) as client:
             import time
             start = time.perf_counter()
-            # LiveKit Cloud returns 404 on root, but that means it's reachable
             response = await client.get(http_url)
             latency = (time.perf_counter() - start) * 1000
             
-            # Any response means the server is reachable
             return HealthCheckResult(
                 service="LiveKit",
                 healthy=True,
@@ -81,215 +72,83 @@ async def check_livekit(config: AgentConfig) -> HealthCheckResult:
         )
 
 
-async def check_deepgram(config: AgentConfig) -> HealthCheckResult:
-    """Check Deepgram API connectivity."""
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            import time
-            start = time.perf_counter()
-            response = await client.get(
-                "https://api.deepgram.com/v1/projects",
-                headers={"Authorization": f"Token {config.deepgram_api_key}"},
-            )
-            latency = (time.perf_counter() - start) * 1000
-            
-            if response.status_code == 200:
-                return HealthCheckResult(
-                    service="Deepgram",
-                    healthy=True,
-                    message="API key valid",
-                    latency_ms=latency,
-                )
-            elif response.status_code == 401:
-                return HealthCheckResult(
-                    service="Deepgram",
-                    healthy=False,
-                    message="Invalid API key",
-                )
-            else:
-                return HealthCheckResult(
-                    service="Deepgram",
-                    healthy=False,
-                    message=f"Unexpected status: {response.status_code}",
-                )
-    except httpx.TimeoutException:
+async def check_yandex_cloud(config: AgentConfig) -> HealthCheckResult:
+    """Check Yandex Cloud API connectivity."""
+    if not config.yc_api_key and not config.yc_iam_token:
         return HealthCheckResult(
-            service="Deepgram",
+            service="Yandex Cloud",
             healthy=False,
-            message="Connection timeout",
-        )
-    except Exception as e:
-        return HealthCheckResult(
-            service="Deepgram",
-            healthy=False,
-            message=f"Error: {str(e)}",
-        )
-
-
-async def check_openai(config: AgentConfig) -> HealthCheckResult:
-    """Check OpenAI-compatible API connectivity."""
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            import time
-            start = time.perf_counter()
-            response = await client.get(
-                f"{config.openai_base_url}/models",
-                headers={"Authorization": f"Bearer {config.openai_api_key}"},
-            )
-            latency = (time.perf_counter() - start) * 1000
-            
-            if response.status_code == 200:
-                return HealthCheckResult(
-                    service="OpenAI/CometAPI",
-                    healthy=True,
-                    message="API key valid",
-                    latency_ms=latency,
-                )
-            elif response.status_code == 401:
-                return HealthCheckResult(
-                    service="OpenAI/CometAPI",
-                    healthy=False,
-                    message="Invalid API key",
-                )
-            else:
-                return HealthCheckResult(
-                    service="OpenAI/CometAPI",
-                    healthy=False,
-                    message=f"Unexpected status: {response.status_code}",
-                )
-    except httpx.TimeoutException:
-        return HealthCheckResult(
-            service="OpenAI/CometAPI",
-            healthy=False,
-            message="Connection timeout",
-        )
-    except Exception as e:
-        return HealthCheckResult(
-            service="OpenAI/CometAPI",
-            healthy=False,
-            message=f"Error: {str(e)}",
-        )
-
-
-async def check_elevenlabs(config: AgentConfig) -> HealthCheckResult:
-    """Check ElevenLabs API connectivity."""
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            import time
-            start = time.perf_counter()
-            response = await client.get(
-                "https://api.elevenlabs.io/v1/user",
-                headers={"xi-api-key": config.eleven_api_key},
-            )
-            latency = (time.perf_counter() - start) * 1000
-            
-            if response.status_code == 200:
-                return HealthCheckResult(
-                    service="ElevenLabs",
-                    healthy=True,
-                    message="API key valid",
-                    latency_ms=latency,
-                )
-            elif response.status_code == 401:
-                return HealthCheckResult(
-                    service="ElevenLabs",
-                    healthy=False,
-                    message="Invalid API key",
-                )
-            else:
-                return HealthCheckResult(
-                    service="ElevenLabs",
-                    healthy=False,
-                    message=f"Unexpected status: {response.status_code}",
-                )
-    except httpx.TimeoutException:
-        return HealthCheckResult(
-            service="ElevenLabs",
-            healthy=False,
-            message="Connection timeout",
-        )
-    except Exception as e:
-        return HealthCheckResult(
-            service="ElevenLabs",
-            healthy=False,
-            message=f"Error: {str(e)}",
-        )
-
-
-async def check_exolve(config: AgentConfig) -> HealthCheckResult:
-    """Check MTS Exolve API connectivity."""
-    if not config.exolve_api_key:
-        return HealthCheckResult(
-            service="MTS Exolve",
-            healthy=True,
-            message="Skipped (no API key configured)",
+            message="No API key or IAM token configured",
         )
     
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             import time
             start = time.perf_counter()
+            
+            headers = {}
+            if config.yc_api_key:
+                headers["Authorization"] = f"Api-Key {config.yc_api_key}"
+            elif config.yc_iam_token:
+                headers["Authorization"] = f"Bearer {config.yc_iam_token}"
+            
+            if config.yc_folder_id:
+                headers["x-folder-id"] = config.yc_folder_id
+            
+            # Check LLM API endpoint
             response = await client.post(
-                "https://api.exolve.ru/number/customer/v1/GetSIPList",
-                headers={"Authorization": f"Bearer {config.exolve_api_key}"},
-                json={},
+                "https://llm.api.cloud.yandex.net/foundationModels/v1/completion",
+                headers={**headers, "Content-Type": "application/json"},
+                json={
+                    "modelUri": f"gpt://{config.yc_folder_id}/yandexgpt-lite",
+                    "completionOptions": {"maxTokens": 1},
+                    "messages": [{"role": "user", "text": "test"}],
+                },
             )
             latency = (time.perf_counter() - start) * 1000
             
             if response.status_code == 200:
-                data = response.json()
-                sip_count = len(data.get("sip_list", []))
                 return HealthCheckResult(
-                    service="MTS Exolve",
+                    service="Yandex Cloud",
                     healthy=True,
-                    message=f"API key valid ({sip_count} SIP resources)",
+                    message="API key valid, LLM accessible",
                     latency_ms=latency,
                 )
             elif response.status_code == 401:
                 return HealthCheckResult(
-                    service="MTS Exolve",
+                    service="Yandex Cloud",
                     healthy=False,
-                    message="Invalid API key",
+                    message="Invalid API key or IAM token",
                 )
             else:
                 return HealthCheckResult(
-                    service="MTS Exolve",
+                    service="Yandex Cloud",
                     healthy=False,
                     message=f"Unexpected status: {response.status_code}",
                 )
     except httpx.TimeoutException:
         return HealthCheckResult(
-            service="MTS Exolve",
+            service="Yandex Cloud",
             healthy=False,
             message="Connection timeout",
         )
     except Exception as e:
         return HealthCheckResult(
-            service="MTS Exolve",
+            service="Yandex Cloud",
             healthy=False,
             message=f"Error: {str(e)}",
         )
 
 
 async def check_all_apis(config: AgentConfig | None = None) -> AllHealthChecks:
-    """Run health checks for all APIs concurrently.
-    
-    Args:
-        config: AgentConfig instance. If None, loads from environment.
-        
-    Returns:
-        AllHealthChecks with results for each service.
-    """
+    """Run health checks for all APIs concurrently."""
     if config is None:
         from agent.config import load_config
         config = load_config()
     
     results = await asyncio.gather(
         check_livekit(config),
-        check_deepgram(config),
-        check_openai(config),
-        check_elevenlabs(config),
-        check_exolve(config),
+        check_yandex_cloud(config),
     )
     
     return AllHealthChecks(results=list(results))
@@ -301,7 +160,6 @@ def run_health_checks() -> AllHealthChecks:
 
 
 if __name__ == "__main__":
-    # Run health checks when executed directly
     results = run_health_checks()
     print(results)
     exit(0 if results.all_healthy else 1)
