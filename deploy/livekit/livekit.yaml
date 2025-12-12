@@ -13,14 +13,9 @@ rtc:
   # Будет автоматически определён
   # node_ip: ""
 
-# Встроенный TURN сервер
+# TURN отключён - используем Caddy для SSL и прямой WebRTC
 turn:
-  enabled: true
-  domain: livekit.agentio.pro
-  tls_port: 443
-  udp_port: 443
-  # Внешний IP будет определён автоматически
-  # external_tls: true
+  enabled: false
 
 # API ключи (переопределяются через LIVEKIT_KEYS env)
 keys:

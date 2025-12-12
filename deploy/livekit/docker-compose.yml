@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   # LiveKit Server
   livekit:
@@ -8,11 +6,10 @@ services:
     restart: unless-stopped
     network_mode: host
     volumes:
-      - ./livekit.yaml:/etc/livekit.yaml:ro
+      - ./livekit.yaml:/livekit.yaml:ro
     environment:
-      - LIVEKIT_CONFIG=/etc/livekit.yaml
       - LIVEKIT_KEYS=${LIVEKIT_KEYS}
-    command: ["--config", "/etc/livekit.yaml"]
+    command: ["--config", "/livekit.yaml"]
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:7880/"]
       interval: 30s
