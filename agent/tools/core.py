@@ -53,9 +53,9 @@ async def end_call(context: RunContext, reason: str = "user_farewell") -> str:
     room_name = ctx.room.name if ctx.room else "unknown"
     logger.info(f"Scheduling hangup for room: {room_name}")
     
-    # Schedule hangup after delay to allow farewell message to be spoken
+    # Schedule hangup after short delay to allow farewell message to be spoken
     async def delayed_hangup():
-        await asyncio.sleep(5.0)  # Wait for TTS to finish farewell
+        await asyncio.sleep(2.0)  # Wait for TTS to finish farewell
         try:
             job_ctx = get_job_context()
             if job_ctx is not None and job_ctx.room:
