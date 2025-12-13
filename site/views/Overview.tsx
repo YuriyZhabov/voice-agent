@@ -3,7 +3,7 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Cell 
 } from 'recharts';
 import { StatCard, Card, StatusBadge } from '../components/Common';
-import { SERVICES, ERROR_DISTRIBUTION } from '../constants';
+import { ERROR_DISTRIBUTION } from '../constants';
 import { AlertCircle, CheckCircle2, Clock, RefreshCw } from 'lucide-react';
 import { 
   getCallStats24h, 
@@ -12,6 +12,7 @@ import {
   subscribeToNewCalls,
   Call 
 } from '../lib/supabase';
+import { getTargetsHealth, formatServiceName } from '../lib/prometheus';
 
 interface CallVolumePoint {
   time: string;
@@ -25,6 +26,13 @@ interface Alert {
   service: string;
   message: string;
   timestamp: string;
+}
+
+interface ServiceStatus {
+  name: string;
+  status: 'operational' | 'degraded' | 'down';
+  latency: string;
+  instance: string;
 }
 
 const CustomTooltip = ({ active, payload, label }: any) => {
@@ -87,15 +95,18 @@ export const Overview: React.FC = () => {
   const [avgLatency, setAvgLatency] = useState<string>('--');
   const [callVolumeData, setCallVolumeData] = useState<CallVolumePoint[]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([]);
+  const [services, setServices] = useState<ServiceStatus[]>([]);
+  const [systemUptime, setSystemUptime] = useState<number>(99.9);
   const [loading, setLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState<Date>(new Date());
 
   const fetchData = useCallback(async () => {
     try {
-      const [activeCallsData, stats, todayCalls] = await Promise.all([
+      const [activeCallsData, stats, todayCalls, targets] = await Promise.all([
         getActiveCalls(),
         getCallStats24h(),
         getCallsToday(),
+        getTargetsHealth(),
       ]);
 
       setActiveCalls(activeCallsData.length);
@@ -104,11 +115,50 @@ export const Overview: React.FC = () => {
       setAvgLatency(stats.avgLatencyMs > 0 ? `${(stats.avgLatencyMs / 1000).toFixed(1)}s` : '--');
       setCallVolumeData(generateCallVolumeData(todayCalls));
       
-      // Generate alerts from recent failed calls
-      const recentAlerts: Alert[] = todayCalls
+      // Process Prometheus targets into services
+      const serviceList: ServiceStatus[] = targets
+        .filter(t => t.job !== 'prometheus') // Skip prometheus self
+        .map(t => ({
+          name: formatServiceName(t.instance),
+          status: t.health === 'up' ? 'operational' : 'down',
+          latency: t.lastError ? 'error' : 'ok',
+          instance: t.instance,
+        }));
+      
+      // Add unique services only
+      const uniqueServices = serviceList.reduce((acc, s) => {
+        if (!acc.find(x => x.name === s.name)) {
+          acc.push(s);
+        }
+        return acc;
+      }, [] as ServiceStatus[]);
+      
+      setServices(uniqueServices.length > 0 ? uniqueServices : [
+        { name: 'LiveKit Server', status: 'operational', latency: '--', instance: '' },
+        { name: 'Voice Agent', status: 'operational', latency: '--', instance: '' },
+        { name: 'SIP Gateway', status: 'operational', latency: '--', instance: '' },
+      ]);
+      
+      // Calculate uptime from healthy services
+      const upCount = targets.filter(t => t.health === 'up').length;
+      const totalCount = targets.length || 1;
+      setSystemUptime(Math.round((upCount / totalCount) * 1000) / 10);
+      
+      // Generate alerts from failed services and calls
+      const serviceAlerts: Alert[] = targets
+        .filter(t => t.health === 'down')
+        .map((t, i) => ({
+          id: `svc-${i}`,
+          severity: 'critical' as const,
+          service: formatServiceName(t.instance),
+          message: t.lastError || 'Сервис недоступен',
+          timestamp: new Date(t.lastScrape).toLocaleTimeString(),
+        }));
+      
+      const callAlerts: Alert[] = todayCalls
         .filter(c => c.status === 'failed')
-        .slice(0, 4)
-        .map((c, i) => ({
+        .slice(0, 2)
+        .map((c) => ({
           id: c.id,
           severity: 'warning' as const,
           service: 'Voice Agent',
@@ -116,7 +166,9 @@ export const Overview: React.FC = () => {
           timestamp: new Date(c.start_time).toLocaleTimeString(),
         }));
       
-      if (recentAlerts.length === 0) {
+      const allAlerts = [...serviceAlerts, ...callAlerts].slice(0, 4);
+      
+      if (allAlerts.length === 0) {
         setAlerts([{
           id: '1',
           severity: 'info',
@@ -125,7 +177,7 @@ export const Overview: React.FC = () => {
           timestamp: 'сейчас',
         }]);
       } else {
-        setAlerts(recentAlerts);
+        setAlerts(allAlerts);
       }
       
       setLastUpdate(new Date());
@@ -280,11 +332,11 @@ export const Overview: React.FC = () => {
               <div className="relative h-32 w-32 flex items-center justify-center">
                 <svg className="h-full w-full -rotate-90" viewBox="0 0 36 36">
                   <path className="text-slate-800" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="currentColor" strokeWidth="3.5" />
-                  <path className="text-primary-400" strokeDasharray="99.9, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" />
+                  <path className={systemUptime >= 99 ? "text-emerald-400" : systemUptime >= 90 ? "text-amber-400" : "text-rose-400"} strokeDasharray={`${systemUptime}, 100`} d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" />
                 </svg>
                 <div className="absolute flex flex-col items-center">
-                  <span className="text-2xl font-bold text-white">99.9%</span>
-                  <span className="text-xs text-slate-400">В среднем</span>
+                  <span className="text-2xl font-bold text-white">{systemUptime}%</span>
+                  <span className="text-xs text-slate-400">Сейчас</span>
                 </div>
               </div>
             </div>
@@ -296,10 +348,10 @@ export const Overview: React.FC = () => {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Card title="Статус сервисов">
           <div className="space-y-4">
-            {SERVICES.map((s) => (
+            {services.map((s) => (
               <div key={s.name} className="flex items-center justify-between p-3 rounded-lg bg-slate-800/30 hover:bg-slate-800/50 transition-colors">
                 <div className="flex items-center gap-3">
-                  {s.status === 'operational' ? <CheckCircle2 className="text-emerald-400" size={18} /> : <AlertCircle className="text-amber-400" size={18} />}
+                  {s.status === 'operational' ? <CheckCircle2 className="text-emerald-400" size={18} /> : <AlertCircle className="text-rose-400" size={18} />}
                   <span className="font-medium text-slate-200">{s.name}</span>
                 </div>
                 <div className="flex items-center gap-4">

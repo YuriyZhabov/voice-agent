@@ -13,18 +13,8 @@ scrape_configs:
     static_configs:
       - targets: ['localhost:9090']
 
-  # LiveKit Server metrics
-  - job_name: 'livekit'
-    static_configs:
-      - targets: ['158.160.55.228:7881']
-    metrics_path: /metrics
-
-  # Voice Agent metrics (from health endpoint)
-  - job_name: 'voice-agent'
-    static_configs:
-      - targets: ['130.193.50.241:8081']
-    metrics_path: /metrics
-    scrape_timeout: 10s
+  # Voice Agent health (via blackbox, metrics endpoint not available)
+  # LiveKit metrics require internal network access
 
   # Blackbox Exporter - HTTP probes
   - job_name: 'blackbox-http'
