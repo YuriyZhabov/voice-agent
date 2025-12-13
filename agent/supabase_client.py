@@ -250,7 +250,7 @@ async def log_latency_metric(
         }
         
         client.table("call_metrics").insert(data).execute()
-        logger.debug(f"Logged metric: {metric_type}={value_ms}ms")
+        logger.info(f"Logged metric: {metric_type}={value_ms}ms for {call_id}")
         return True
     except Exception as e:
         logger.error(f"Failed to log metric: {e}")
@@ -284,7 +284,7 @@ async def log_llm_usage(
         }
         
         client.table("call_metrics").insert(data).execute()
-        logger.debug(f"Logged LLM usage: {prompt_tokens}+{completion_tokens} tokens")
+        logger.info(f"Logged LLM usage: {prompt_tokens}+{completion_tokens} tokens for {call_id}")
         return True
     except Exception as e:
         logger.error(f"Failed to log LLM usage: {e}")
@@ -310,7 +310,7 @@ async def log_event(
         }
         
         client.table("call_events").insert(event_data).execute()
-        logger.debug(f"Logged event: {event_type}")
+        logger.info(f"Logged event: {event_type} for {call_id}")
         return True
     except Exception as e:
         logger.error(f"Failed to log event: {e}")

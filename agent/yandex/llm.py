@@ -378,6 +378,34 @@ class YandexLLMStream(llm.LLMStream):
                     
                     logger.info(f"Tool execution took {execution_time:.2f}s")
                     
+                    # Log tool executions to Supabase
+                    try:
+                        from agent.supabase_client import log_tool_execution
+                        from agent.context import get_call_id
+                        
+                        call_id = get_call_id()
+                        
+                        for i, tc in enumerate(tool_calls):
+                            func_call = tc.get("functionCall", {})
+                            tool_name = func_call.get("name", "unknown")
+                            tool_args = func_call.get("arguments", {})
+                            tool_result = tool_results[i] if i < len(tool_results) else {}
+                            result_content = tool_result.get("functionResult", {}).get("content", "")
+                            
+                            if call_id:
+                                await log_tool_execution(
+                                    call_id=call_id,
+                                    tool_name=tool_name,
+                                    parameters=tool_args,
+                                    result={"content": result_content[:500]},
+                                    success=not result_content.startswith("Error"),
+                                    latency_ms=int(execution_time * 1000 / len(tool_calls)),
+                                )
+                            else:
+                                logger.warning(f"No call_id available for tool logging: {tool_name}")
+                    except Exception as log_err:
+                        logger.warning(f"Failed to log tool execution: {log_err}")
+                    
                     # Build second request with tool results
                     # Add assistant's toolCallList and user's toolResultList to messages
                     messages_with_results = messages.copy()

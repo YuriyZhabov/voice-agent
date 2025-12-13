@@ -40,6 +40,7 @@ from agent.supabase_client import (
     log_event,
     log_alert,
 )
+from agent.context import set_call_id, clear_call_id
 
 
 @dataclass
@@ -128,6 +129,9 @@ async def entrypoint(ctx: JobContext):
     room_name = ctx.room.name if ctx.room else "unknown"
     logger = CallLogger(call_id=room_name)
     logger.log_event("call_started", {"room": room_name})
+    
+    # Set global call_id for Supabase logging
+    set_call_id(room_name)
     
     # Extract phone number from room name (format: call-_79001234567_xxx)
     phone_number = "unknown"
@@ -344,6 +348,9 @@ async def entrypoint(ctx: JobContext):
             "end_reason": end_reason,
             "metrics": call_metrics,
         })
+        
+        # Clear global call_id
+        clear_call_id()
 
 
 async def hangup_call():
