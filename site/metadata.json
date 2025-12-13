@@ -1,0 +1,5 @@
+{
+  "name": "VoxPulse - Мониторинг Voice AI",
+  "description": "Высокопроизводительный дашборд для мониторинга голосовых AI-агентов, SIP-телефонии и инфраструктуры LLM.",
+  "requestFramePermissions": []
+}
