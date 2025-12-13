@@ -1,10 +1,31 @@
-import React from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { 
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Cell 
 } from 'recharts';
 import { StatCard, Card, StatusBadge } from '../components/Common';
-import { ALERTS, SERVICES, CALL_VOLUME, ERROR_DISTRIBUTION } from '../constants';
-import { AlertCircle, CheckCircle2, Clock, Activity } from 'lucide-react';
+import { SERVICES, ERROR_DISTRIBUTION } from '../constants';
+import { AlertCircle, CheckCircle2, Clock, RefreshCw } from 'lucide-react';
+import { 
+  getCallStats24h, 
+  getActiveCalls, 
+  getCallsToday, 
+  subscribeToNewCalls,
+  Call 
+} from '../lib/supabase';
+
+interface CallVolumePoint {
+  time: string;
+  activeCalls: number;
+  failures: number;
+}
+
+interface Alert {
+  id: string;
+  severity: 'critical' | 'warning' | 'info';
+  service: string;
+  message: string;
+  timestamp: string;
+}
 
 const CustomTooltip = ({ active, payload, label }: any) => {
   if (active && payload && payload.length) {
@@ -22,7 +43,120 @@ const CustomTooltip = ({ active, payload, label }: any) => {
   return null;
 };
 
+function formatDuration(seconds: number): string {
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${mins}m ${secs}s`;
+}
+
+function generateCallVolumeData(calls: Call[]): CallVolumePoint[] {
+  const now = new Date();
+  const hourlyData: Record<string, { active: number; failed: number }> = {};
+  
+  // Initialize 24 hours
+  for (let i = 23; i >= 0; i--) {
+    const t = new Date(now.getTime() - i * 3600000);
+    const key = t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    hourlyData[key] = { active: 0, failed: 0 };
+  }
+  
+  // Aggregate calls by hour
+  calls.forEach(call => {
+    const callTime = new Date(call.start_time);
+    const key = callTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    if (hourlyData[key]) {
+      if (call.status === 'failed') {
+        hourlyData[key].failed++;
+      } else {
+        hourlyData[key].active++;
+      }
+    }
+  });
+  
+  return Object.entries(hourlyData).map(([time, data]) => ({
+    time,
+    activeCalls: data.active,
+    failures: data.failed,
+  }));
+}
+
 export const Overview: React.FC = () => {
+  const [activeCalls, setActiveCalls] = useState<number>(0);
+  const [totalCalls24h, setTotalCalls24h] = useState<number>(0);
+  const [avgDuration, setAvgDuration] = useState<string>('0m 0s');
+  const [avgLatency, setAvgLatency] = useState<string>('--');
+  const [callVolumeData, setCallVolumeData] = useState<CallVolumePoint[]>([]);
+  const [alerts, setAlerts] = useState<Alert[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [lastUpdate, setLastUpdate] = useState<Date>(new Date());
+
+  const fetchData = useCallback(async () => {
+    try {
+      const [activeCallsData, stats, todayCalls] = await Promise.all([
+        getActiveCalls(),
+        getCallStats24h(),
+        getCallsToday(),
+      ]);
+
+      setActiveCalls(activeCallsData.length);
+      setTotalCalls24h(stats.totalCalls);
+      setAvgDuration(formatDuration(stats.avgDurationSeconds));
+      setAvgLatency(stats.avgLatencyMs > 0 ? `${(stats.avgLatencyMs / 1000).toFixed(1)}s` : '--');
+      setCallVolumeData(generateCallVolumeData(todayCalls));
+      
+      // Generate alerts from recent failed calls
+      const recentAlerts: Alert[] = todayCalls
+        .filter(c => c.status === 'failed')
+        .slice(0, 4)
+        .map((c, i) => ({
+          id: c.id,
+          severity: 'warning' as const,
+          service: 'Voice Agent',
+          message: `Звонок ${c.phone_number} завершился с ошибкой`,
+          timestamp: new Date(c.start_time).toLocaleTimeString(),
+        }));
+      
+      if (recentAlerts.length === 0) {
+        setAlerts([{
+          id: '1',
+          severity: 'info',
+          service: 'Система',
+          message: 'Нет активных алертов',
+          timestamp: 'сейчас',
+        }]);
+      } else {
+        setAlerts(recentAlerts);
+      }
+      
+      setLastUpdate(new Date());
+    } catch (error) {
+      console.error('Error fetching data:', error);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchData();
+    
+    // Poll every 10 seconds
+    const interval = setInterval(fetchData, 10000);
+    
+    // Subscribe to realtime updates
+    const subscription = subscribeToNewCalls((call) => {
+      if (call.status === 'active') {
+        setActiveCalls(prev => prev + 1);
+      } else {
+        fetchData(); // Refresh all data on call completion
+      }
+    });
+    
+    return () => {
+      clearInterval(interval);
+      subscription.unsubscribe();
+    };
+  }, [fetchData]);
+
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -31,13 +165,23 @@ export const Overview: React.FC = () => {
           <p className="text-slate-400 text-sm">Мониторинг голосовой AI платформы в реальном времени</p>
         </div>
         <div className="flex items-center gap-3">
-            <span className="flex items-center gap-2 text-sm text-slate-400 bg-slate-800/50 px-3 py-1.5 rounded-full border border-slate-700">
-                <span className="relative flex h-2 w-2">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-                </span>
-                Все системы в норме
+          <button 
+            onClick={fetchData}
+            className="flex items-center gap-2 text-sm text-slate-400 hover:text-white transition-colors"
+            title="Обновить данные"
+          >
+            <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+          </button>
+          <span className="text-xs text-slate-500">
+            Обновлено: {lastUpdate.toLocaleTimeString()}
+          </span>
+          <span className="flex items-center gap-2 text-sm text-slate-400 bg-slate-800/50 px-3 py-1.5 rounded-full border border-slate-700">
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
             </span>
+            {activeCalls > 0 ? `${activeCalls} активных` : 'Все системы в норме'}
+          </span>
         </div>
       </div>
 
@@ -45,29 +189,28 @@ export const Overview: React.FC = () => {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard 
           label="Активные звонки" 
-          value={342} 
-          trend={12} 
-          trendLabel="к прошлому часу" 
+          value={activeCalls} 
+          trend={0} 
+          trendLabel="сейчас" 
         />
         <StatCard 
           label="TTFW (Среднее)" 
-          value="1.2s" 
-          trend={-5} 
-          trendLabel="улучшение"
+          value={avgLatency}
+          trend={0} 
+          trendLabel="цель < 1.5s"
           inverseTrend
-          subValue="цель &lt; 1.5s"
         />
         <StatCard 
           label="Всего звонков (24ч)" 
-          value="12,450" 
-          trend={8.5} 
-          trendLabel="за вчера"
+          value={totalCalls24h.toLocaleString()} 
+          trend={0} 
+          trendLabel="за сутки"
         />
         <StatCard 
           label="Ср. длительность" 
-          value="4m 12s" 
-          trend={-2} 
-          trendLabel="стабильно"
+          value={avgDuration} 
+          trend={0} 
+          trendLabel="среднее"
         />
       </div>
 
@@ -76,7 +219,7 @@ export const Overview: React.FC = () => {
         <Card className="lg:col-span-2" title="Объем звонков и сбои (24ч)">
           <div className="h-[300px] w-full mt-4">
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={CALL_VOLUME}>
+              <AreaChart data={callVolumeData}>
                 <defs>
                   <linearGradient id="colorCalls" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor="#06b6d4" stopOpacity={0.3}/>
@@ -92,22 +235,22 @@ export const Overview: React.FC = () => {
                 <YAxis stroke="#64748b" fontSize={12} tickLine={false} axisLine={false} />
                 <Tooltip content={<CustomTooltip />} />
                 <Area 
-                    type="monotone" 
-                    dataKey="activeCalls" 
-                    name="Активные"
-                    stroke="#06b6d4" 
-                    strokeWidth={2}
-                    fillOpacity={1} 
-                    fill="url(#colorCalls)" 
+                  type="monotone" 
+                  dataKey="activeCalls" 
+                  name="Звонки"
+                  stroke="#06b6d4" 
+                  strokeWidth={2}
+                  fillOpacity={1} 
+                  fill="url(#colorCalls)" 
                 />
                 <Area 
-                    type="monotone" 
-                    dataKey="failures" 
-                    name="Сбои"
-                    stroke="#ef4444" 
-                    strokeWidth={2}
-                    fillOpacity={1} 
-                    fill="url(#colorFailures)" 
+                  type="monotone" 
+                  dataKey="failures" 
+                  name="Сбои"
+                  stroke="#ef4444" 
+                  strokeWidth={2}
+                  fillOpacity={1} 
+                  fill="url(#colorFailures)" 
                 />
               </AreaChart>
             </ResponsiveContainer>
@@ -115,39 +258,37 @@ export const Overview: React.FC = () => {
         </Card>
 
         <div className="grid grid-rows-2 gap-6">
-            <Card title="Распределение SIP ошибок">
-                <div className="h-[140px] w-full">
-                    <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={ERROR_DISTRIBUTION} layout="vertical" barSize={12}>
-                            <XAxis type="number" hide />
-                            <YAxis dataKey="name" type="category" width={100} tick={{fill: '#94a3b8', fontSize: 11}} axisLine={false} tickLine={false} />
-                            <Tooltip cursor={{fill: 'transparent'}} content={<CustomTooltip />} />
-                            <Bar dataKey="value" radius={[0, 4, 4, 0]}>
-                                {ERROR_DISTRIBUTION.map((entry, index) => (
-                                    <Cell key={`cell-${index}`} fill={entry.fill} />
-                                ))}
-                            </Bar>
-                        </BarChart>
-                    </ResponsiveContainer>
-                </div>
-            </Card>
+          <Card title="Распределение SIP ошибок">
+            <div className="h-[140px] w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={ERROR_DISTRIBUTION} layout="vertical" barSize={12}>
+                  <XAxis type="number" hide />
+                  <YAxis dataKey="name" type="category" width={100} tick={{fill: '#94a3b8', fontSize: 11}} axisLine={false} tickLine={false} />
+                  <Tooltip cursor={{fill: 'transparent'}} content={<CustomTooltip />} />
+                  <Bar dataKey="value" radius={[0, 4, 4, 0]}>
+                    {ERROR_DISTRIBUTION.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={entry.fill} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </Card>
 
-             <Card title="Аптайм (Система)">
-                 <div className="flex items-center justify-center h-full pb-4">
-                    <div className="relative h-32 w-32 flex items-center justify-center">
-                        <svg className="h-full w-full -rotate-90" viewBox="0 0 36 36">
-                            {/* Background Circle */}
-                            <path className="text-slate-800" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="currentColor" strokeWidth="3.5" />
-                            {/* Value Circle */}
-                            <path className="text-primary-400" strokeDasharray="99.9, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" />
-                        </svg>
-                        <div className="absolute flex flex-col items-center">
-                            <span className="text-2xl font-bold text-white">99.9%</span>
-                            <span className="text-xs text-slate-400">В среднем</span>
-                        </div>
-                    </div>
-                 </div>
-             </Card>
+          <Card title="Аптайм (Система)">
+            <div className="flex items-center justify-center h-full pb-4">
+              <div className="relative h-32 w-32 flex items-center justify-center">
+                <svg className="h-full w-full -rotate-90" viewBox="0 0 36 36">
+                  <path className="text-slate-800" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="currentColor" strokeWidth="3.5" />
+                  <path className="text-primary-400" strokeDasharray="99.9, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" />
+                </svg>
+                <div className="absolute flex flex-col items-center">
+                  <span className="text-2xl font-bold text-white">99.9%</span>
+                  <span className="text-xs text-slate-400">В среднем</span>
+                </div>
+              </div>
+            </div>
+          </Card>
         </div>
       </div>
 
@@ -162,8 +303,8 @@ export const Overview: React.FC = () => {
                   <span className="font-medium text-slate-200">{s.name}</span>
                 </div>
                 <div className="flex items-center gap-4">
-                    <span className="text-xs text-slate-500 font-mono">{s.latency}</span>
-                    <StatusBadge status={s.status} />
+                  <span className="text-xs text-slate-500 font-mono">{s.latency}</span>
+                  <StatusBadge status={s.status} />
                 </div>
               </div>
             ))}
@@ -172,25 +313,25 @@ export const Overview: React.FC = () => {
 
         <Card title="Недавние алерты">
           <div className="space-y-4">
-            {ALERTS.map((alert) => (
+            {alerts.map((alert) => (
               <div key={alert.id} className="flex items-start gap-3 p-3 rounded-lg border border-slate-800/50 bg-slate-800/20">
                 <div className={`mt-1 h-2 w-2 rounded-full flex-shrink-0 ${
-                    alert.severity === 'critical' ? 'bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.6)]' : 
-                    alert.severity === 'warning' ? 'bg-amber-500' : 'bg-blue-400'
+                  alert.severity === 'critical' ? 'bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.6)]' : 
+                  alert.severity === 'warning' ? 'bg-amber-500' : 'bg-blue-400'
                 }`} />
                 <div className="flex-1">
-                    <div className="flex justify-between items-start">
-                        <h4 className="text-sm font-medium text-slate-200">{alert.service}</h4>
-                        <span className="text-xs text-slate-500 flex items-center gap-1">
-                            <Clock size={10} /> {alert.timestamp}
-                        </span>
-                    </div>
-                    <p className="text-xs text-slate-400 mt-1">{alert.message}</p>
+                  <div className="flex justify-between items-start">
+                    <h4 className="text-sm font-medium text-slate-200">{alert.service}</h4>
+                    <span className="text-xs text-slate-500 flex items-center gap-1">
+                      <Clock size={10} /> {alert.timestamp}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400 mt-1">{alert.message}</p>
                 </div>
               </div>
             ))}
             <button className="w-full text-center text-xs text-primary-400 hover:text-primary-300 py-2">
-                Смотреть все алерты
+              Смотреть все алерты
             </button>
           </div>
         </Card>

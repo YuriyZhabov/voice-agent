@@ -1,0 +1,60 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+alerting:
+  alertmanagers: []
+
+rule_files: []
+
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # LiveKit Server metrics
+  - job_name: 'livekit'
+    static_configs:
+      - targets: ['158.160.55.228:7881']
+    metrics_path: /metrics
+
+  # Voice Agent metrics (from health endpoint)
+  - job_name: 'voice-agent'
+    static_configs:
+      - targets: ['130.193.50.241:8081']
+    metrics_path: /metrics
+    scrape_timeout: 10s
+
+  # Blackbox Exporter - HTTP probes
+  - job_name: 'blackbox-http'
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets:
+          - https://livekit.agentio.pro
+          - http://130.193.50.241:8081/health
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox:9115
+
+  # Blackbox Exporter - TCP probes (SIP)
+  - job_name: 'blackbox-tcp'
+    metrics_path: /probe
+    params:
+      module: [tcp_connect]
+    static_configs:
+      - targets:
+          - 158.160.55.228:5060
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox:9115
