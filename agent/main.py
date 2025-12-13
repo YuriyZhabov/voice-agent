@@ -29,6 +29,12 @@ from agent.yandex import create_stt, create_tts, create_llm
 from agent.logger import CallLogger
 from agent.prompts import get_assistant_prompt
 from agent.tools import get_all_tools
+from agent.supabase_client import (
+    log_call_start,
+    log_call_end,
+    log_transcript,
+    log_tool_execution,
+)
 
 
 @dataclass
@@ -117,6 +123,22 @@ async def entrypoint(ctx: JobContext):
     room_name = ctx.room.name if ctx.room else "unknown"
     logger = CallLogger(call_id=room_name)
     logger.log_event("call_started", {"room": room_name})
+    
+    # Extract phone number from room name (format: call-_79001234567_xxx)
+    phone_number = "unknown"
+    if room_name.startswith("call-"):
+        parts = room_name.split("_")
+        if len(parts) >= 2:
+            phone_number = parts[1] if parts[1].startswith("7") else f"+{parts[1]}"
+    
+    # Log call start to Supabase
+    await log_call_start(
+        call_id=room_name,
+        phone_number=phone_number,
+        room_name=room_name,
+        direction="inbound",
+        agent_version=config.agent_name,
+    )
     
     call_state = {"ending": False}
     agent_session = None
@@ -207,6 +229,8 @@ async def entrypoint(ctx: JobContext):
             silence_monitor.reset()
             latency_metrics.mark_stt_complete()
             logger.log_event("transcribed", {"text": str(transcript)[:100]})
+            # Log user transcript to Supabase (fire and forget)
+            asyncio.create_task(log_transcript(room_name, "user", str(transcript)))
         
         usage_collector = metrics.UsageCollector()
         
@@ -256,6 +280,10 @@ async def entrypoint(ctx: JobContext):
         except Exception:
             pass
         logger.log_summary()
+        
+        # Log call end to Supabase
+        status = "completed" if not call_state.get("error") else "failed"
+        await log_call_end(room_name, status)
 
 
 async def hangup_call():

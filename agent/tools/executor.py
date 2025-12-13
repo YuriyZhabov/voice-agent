@@ -4,10 +4,25 @@ Provides a centralized way to execute tools from any LLM integration.
 Handles tool discovery, validation, and execution with proper error handling.
 """
 
+import asyncio
 import logging
+import time
 from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
+
+# Import Supabase logging (lazy to avoid circular imports)
+_supabase_log_tool = None
+
+def _get_supabase_log_tool():
+    global _supabase_log_tool
+    if _supabase_log_tool is None:
+        try:
+            from agent.supabase_client import log_tool_execution
+            _supabase_log_tool = log_tool_execution
+        except ImportError:
+            _supabase_log_tool = lambda *args, **kwargs: asyncio.sleep(0)
+    return _supabase_log_tool
 
 
 class ToolExecutor:
@@ -119,6 +134,10 @@ class ToolExecutor:
         
         logger.info(f"Executing tool: {name}({arguments})")
         
+        start_time = time.time()
+        success = True
+        result_str = ""
+        
         try:
             # Execute the tool - first arg is always context
             result = await tool_func(context, **arguments)
@@ -131,15 +150,37 @@ class ToolExecutor:
             
         except TypeError as e:
             # Handle missing/extra arguments
+            success = False
             error_msg = f"Invalid arguments for {name}: {e}"
             logger.error(error_msg, exc_info=True)
-            return f"Error: {error_msg}"
+            result_str = f"Error: {error_msg}"
+            return result_str
             
         except Exception as e:
             # Handle any other errors
+            success = False
             error_msg = f"Tool {name} failed: {e}"
             logger.error(error_msg, exc_info=True)
-            return f"Error: {error_msg}"
+            result_str = f"Error: {error_msg}"
+            return result_str
+        
+        finally:
+            # Log to Supabase (fire and forget)
+            latency_ms = int((time.time() - start_time) * 1000)
+            # Extract call_id from context if available
+            call_id = None
+            if context and hasattr(context, "userdata"):
+                call_id = context.userdata.get("room_name")
+            if call_id:
+                log_func = _get_supabase_log_tool()
+                asyncio.create_task(log_func(
+                    call_id=call_id,
+                    tool_name=name,
+                    parameters=arguments,
+                    result={"value": result_str[:500]},
+                    success=success,
+                    latency_ms=latency_ms,
+                ))
     
     async def execute_batch(
         self,
