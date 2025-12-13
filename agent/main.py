@@ -349,6 +349,15 @@ async def entrypoint(ctx: JobContext):
             # Log user transcript to Supabase
             asyncio.create_task(log_transcript(room_name, "user", transcript_str, is_final=is_final))
         
+        @agent_session.on("agent_speech_committed")
+        def on_agent_speech_committed(ev):
+            """Handle agent speech committed - log assistant response to Supabase."""
+            content = getattr(ev, 'content', None) or getattr(ev, 'text', None)
+            if content:
+                content_str = str(content)
+                logger.log_event("agent_speech", {"text": content_str[:100]})
+                asyncio.create_task(log_assistant_response(room_name, content_str))
+        
         @agent_session.on("metrics_collected")
         def on_metrics_collected(ev: MetricsCollectedEvent):
             usage_collector.collect(ev.metrics)
