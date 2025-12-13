@@ -358,19 +358,38 @@ async def entrypoint(ctx: JobContext):
                 logger.log_event("agent_speech", {"text": content_str[:100]})
                 asyncio.create_task(log_assistant_response(room_name, content_str))
         
+        @agent_session.on("function_calls_collected")
+        def on_function_calls(ev):
+            """Handle function/tool calls - log to Supabase immediately."""
+            calls = getattr(ev, 'function_calls', []) or []
+            for fc in calls:
+                tool_name = getattr(fc, 'name', None) or getattr(fc, 'function_name', 'unknown')
+                args = getattr(fc, 'arguments', {}) or getattr(fc, 'args', {})
+                logger.log_event("tool_called", {"tool": tool_name, "args": str(args)[:200]})
+                asyncio.create_task(log_event(room_name, "tool_called", {
+                    "tool_name": tool_name,
+                    "arguments": args if isinstance(args, dict) else str(args)[:500]
+                }))
+        
         @agent_session.on("metrics_collected")
         def on_metrics_collected(ev: MetricsCollectedEvent):
             usage_collector.collect(ev.metrics)
             metrics.log_metrics(ev.metrics)
             
-            # Queue detailed metrics for batch logging
+            # Log detailed metrics immediately for real-time UI
             m = ev.metrics
             if hasattr(m, 'stt_duration') and m.stt_duration:
-                latency_metrics.add_metric("stt_latency", m.stt_duration * 1000)
+                stt_ms = m.stt_duration * 1000
+                latency_metrics.add_metric("stt_latency", stt_ms)
+                asyncio.create_task(log_latency_metric(room_name, "stt_latency", stt_ms))
             if hasattr(m, 'llm_ttft') and m.llm_ttft:
-                latency_metrics.add_metric("llm_ttft", m.llm_ttft * 1000)
+                llm_ms = m.llm_ttft * 1000
+                latency_metrics.add_metric("llm_latency", llm_ms)
+                asyncio.create_task(log_latency_metric(room_name, "llm_latency", llm_ms))
             if hasattr(m, 'tts_ttfb') and m.tts_ttfb:
-                latency_metrics.add_metric("tts_ttfb", m.tts_ttfb * 1000)
+                tts_ms = m.tts_ttfb * 1000
+                latency_metrics.add_metric("tts_latency", tts_ms)
+                asyncio.create_task(log_latency_metric(room_name, "tts_latency", tts_ms))
         
         @agent_session.on("error")
         def on_error(error: Exception):

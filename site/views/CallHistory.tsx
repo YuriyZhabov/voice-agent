@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { Card } from '../components/Common';
-import { getRecentCalls, getTranscript, getToolExecutions, Call, Transcript, ToolExecution } from '../lib/supabase';
+import { getRecentCalls, getTranscript, getToolExecutions, getCallEvents, getCallMetrics, Call, Transcript, ToolExecution, CallEvent, CallMetric } from '../lib/supabase';
 import { RefreshCw, Phone, PhoneIncoming, PhoneOutgoing, Clock, MessageSquare, Wrench, ChevronDown, ChevronUp, CheckCircle, XCircle, AlertCircle } from 'lucide-react';
 
 const statusColors: Record<string, { bg: string; text: string; icon: React.ReactNode }> = {
@@ -14,18 +14,25 @@ const CallCard: React.FC<{ call: Call }> = ({ call }) => {
   const [expanded, setExpanded] = useState(false);
   const [transcripts, setTranscripts] = useState<Transcript[]>([]);
   const [tools, setTools] = useState<ToolExecution[]>([]);
+  const [events, setEvents] = useState<CallEvent[]>([]);
+  const [metrics, setMetrics] = useState<CallMetric[]>([]);
   const [loading, setLoading] = useState(false);
+  const [activeTab, setActiveTab] = useState<'transcript' | 'tools' | 'events' | 'metrics'>('transcript');
 
   const loadDetails = async () => {
     if (transcripts.length > 0) return;
     setLoading(true);
     try {
-      const [t, te] = await Promise.all([
+      const [t, te, ev, m] = await Promise.all([
         getTranscript(call.call_id),
         getToolExecutions(call.call_id),
+        getCallEvents(call.call_id),
+        getCallMetrics(call.call_id),
       ]);
       setTranscripts(t);
       setTools(te);
+      setEvents(ev);
+      setMetrics(m);
     } catch (e) {
       console.error('Error loading call details:', e);
     } finally {
@@ -90,37 +97,63 @@ const CallCard: React.FC<{ call: Call }> = ({ call }) => {
             </div>
           ) : (
             <div className="space-y-4">
-              {/* Metrics */}
+              {/* Summary Metrics */}
               {call.metadata?.metrics && (
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
                   <div className="bg-slate-800 rounded p-2">
-                    <div className="text-xs text-slate-500">Ходов диалога</div>
+                    <div className="text-xs text-slate-500">Ходов</div>
                     <div className="text-lg font-bold text-white">{call.metadata.metrics.turn_count || 0}</div>
                   </div>
                   <div className="bg-slate-800 rounded p-2">
-                    <div className="text-xs text-slate-500">Ср. задержка</div>
-                    <div className="text-lg font-bold text-white">{call.metadata.metrics.avg_latency_ms || 0}ms</div>
+                    <div className="text-xs text-slate-500">TTFW</div>
+                    <div className="text-lg font-bold text-cyan-400">{Math.round(call.metadata.metrics.avg_latency_ms || 0)}ms</div>
+                  </div>
+                  <div className="bg-slate-800 rounded p-2">
+                    <div className="text-xs text-slate-500">Min/Max</div>
+                    <div className="text-sm font-mono text-slate-300">{Math.round(call.metadata.metrics.min_latency_ms || 0)}/{Math.round(call.metadata.metrics.max_latency_ms || 0)}</div>
                   </div>
                   <div className="bg-slate-800 rounded p-2">
                     <div className="text-xs text-slate-500">LLM токены</div>
-                    <div className="text-lg font-bold text-white">{call.metadata.metrics.llm_total_tokens || 0}</div>
+                    <div className="text-lg font-bold text-purple-400">{call.metadata.metrics.llm_total_tokens || 0}</div>
                   </div>
                   <div className="bg-slate-800 rounded p-2">
                     <div className="text-xs text-slate-500">TTS символов</div>
-                    <div className="text-lg font-bold text-white">{call.metadata.metrics.tts_chars || 0}</div>
+                    <div className="text-lg font-bold text-amber-400">{call.metadata.metrics.tts_chars || 0}</div>
+                  </div>
+                  <div className="bg-slate-800 rounded p-2">
+                    <div className="text-xs text-slate-500">STT секунд</div>
+                    <div className="text-lg font-bold text-emerald-400">{call.metadata.metrics.stt_audio_seconds || 0}s</div>
                   </div>
                 </div>
               )}
 
-              {/* Transcript */}
-              {transcripts.length > 0 && (
-                <div>
-                  <div className="flex items-center gap-2 text-sm text-slate-400 mb-2">
-                    <MessageSquare size={14} />
-                    <span>Транскрипт ({transcripts.length} сообщений)</span>
-                  </div>
-                  <div className="space-y-2 max-h-64 overflow-y-auto">
-                    {transcripts.map((t) => (
+              {/* Tabs */}
+              <div className="flex gap-1 border-b border-slate-700">
+                {[
+                  { id: 'transcript', label: 'Диалог', count: transcripts.length },
+                  { id: 'tools', label: 'Tools', count: tools.length },
+                  { id: 'events', label: 'События', count: events.length },
+                  { id: 'metrics', label: 'Метрики', count: metrics.length },
+                ].map((tab) => (
+                  <button
+                    key={tab.id}
+                    onClick={() => setActiveTab(tab.id as any)}
+                    className={`px-3 py-2 text-sm font-medium transition-colors ${
+                      activeTab === tab.id
+                        ? 'text-primary-400 border-b-2 border-primary-400'
+                        : 'text-slate-500 hover:text-slate-300'
+                    }`}
+                  >
+                    {tab.label} {tab.count > 0 && <span className="text-xs opacity-60">({tab.count})</span>}
+                  </button>
+                ))}
+              </div>
+
+              {/* Tab Content */}
+              <div className="max-h-72 overflow-y-auto">
+                {activeTab === 'transcript' && (
+                  <div className="space-y-2">
+                    {transcripts.length > 0 ? transcripts.map((t) => (
                       <div
                         key={t.id}
                         className={`p-2 rounded-lg text-sm ${
@@ -140,20 +173,13 @@ const CallCard: React.FC<{ call: Call }> = ({ call }) => {
                           </span>
                         </div>
                       </div>
-                    ))}
+                    )) : <div className="text-slate-500 text-sm py-4 text-center">Нет сообщений</div>}
                   </div>
-                </div>
-              )}
+                )}
 
-              {/* Tool Executions */}
-              {tools.length > 0 && (
-                <div>
-                  <div className="flex items-center gap-2 text-sm text-slate-400 mb-2">
-                    <Wrench size={14} />
-                    <span>Вызовы инструментов ({tools.length})</span>
-                  </div>
+                {activeTab === 'tools' && (
                   <div className="space-y-2">
-                    {tools.map((te) => (
+                    {tools.length > 0 ? tools.map((te) => (
                       <div key={te.id} className="bg-slate-800 rounded p-2 text-sm">
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-2">
@@ -166,21 +192,50 @@ const CallCard: React.FC<{ call: Call }> = ({ call }) => {
                           <span className="text-slate-600">params:</span> {JSON.stringify(te.parameters)}
                         </div>
                         {te.result?.content && (
-                          <div className="mt-1 text-xs text-slate-400 truncate">
-                            → {te.result.content}
-                          </div>
+                          <div className="mt-1 text-xs text-slate-400 truncate">→ {te.result.content}</div>
                         )}
                       </div>
-                    ))}
+                    )) : <div className="text-slate-500 text-sm py-4 text-center">Нет вызовов</div>}
                   </div>
-                </div>
-              )}
+                )}
 
-              {transcripts.length === 0 && tools.length === 0 && !call.metadata?.metrics && (
-                <div className="text-center text-slate-500 py-4">
-                  Нет дополнительных данных
-                </div>
-              )}
+                {activeTab === 'events' && (
+                  <div className="space-y-1">
+                    {events.length > 0 ? events.map((ev) => (
+                      <div key={ev.id} className="flex items-center gap-3 text-xs py-1 border-b border-slate-800">
+                        <span className="text-slate-600 font-mono w-20">{new Date(ev.timestamp).toLocaleTimeString('ru-RU')}</span>
+                        <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${
+                          ev.event_type.includes('error') ? 'bg-rose-500/20 text-rose-400' :
+                          ev.event_type.includes('started') ? 'bg-emerald-500/20 text-emerald-400' :
+                          ev.event_type.includes('tool') ? 'bg-amber-500/20 text-amber-400' :
+                          'bg-slate-700 text-slate-400'
+                        }`}>{ev.event_type}</span>
+                        {ev.data && Object.keys(ev.data).length > 0 && (
+                          <span className="text-slate-500 truncate">{JSON.stringify(ev.data).slice(0, 80)}</span>
+                        )}
+                      </div>
+                    )) : <div className="text-slate-500 text-sm py-4 text-center">Нет событий</div>}
+                  </div>
+                )}
+
+                {activeTab === 'metrics' && (
+                  <div className="space-y-1">
+                    {metrics.length > 0 ? metrics.map((m) => (
+                      <div key={m.id} className="flex items-center gap-3 text-xs py-1 border-b border-slate-800">
+                        <span className="text-slate-600 font-mono w-20">{new Date(m.recorded_at).toLocaleTimeString('ru-RU')}</span>
+                        <span className={`px-1.5 py-0.5 rounded font-mono ${
+                          m.metric_type === 'ttfw' ? 'bg-cyan-500/20 text-cyan-400' :
+                          m.metric_type === 'stt_latency' ? 'bg-amber-500/20 text-amber-400' :
+                          m.metric_type === 'llm_latency' ? 'bg-purple-500/20 text-purple-400' :
+                          m.metric_type === 'tts_latency' ? 'bg-emerald-500/20 text-emerald-400' :
+                          'bg-slate-700 text-slate-400'
+                        }`}>{m.metric_type}</span>
+                        <span className="text-white font-bold">{Math.round(m.value_ms)}ms</span>
+                      </div>
+                    )) : <div className="text-slate-500 text-sm py-4 text-center">Нет метрик</div>}
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>
