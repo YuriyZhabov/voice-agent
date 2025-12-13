@@ -14,20 +14,30 @@ from livekit.agents import RunContext, function_tool, get_job_context
 logger = logging.getLogger(__name__)
 
 
+async def _hangup_call():
+    """Hangup the call by deleting the room."""
+    ctx = get_job_context()
+    if ctx is None:
+        logger.warning("hangup_call: no job context")
+        return
+    
+    logger.info(f"Deleting room: {ctx.room.name}")
+    await ctx.api.room.delete_room(
+        api.DeleteRoomRequest(room=ctx.room.name)
+    )
+
+
 @function_tool
 async def end_call(context: RunContext, reason: str = "user_farewell") -> str:
     """End the call gracefully.
     
-    Call this function when:
-    - The user says goodbye (до свидания, пока, всего хорошего, etc.)
-    - The user indicates they want to end the conversation
-    - The conversation has naturally concluded
+    Call this function when the user wants to end the call.
     
     Args:
         reason: Reason for ending the call (e.g., "user_farewell", "task_complete")
     
     Returns:
-        Confirmation that the call will be ended.
+        Farewell message to speak before hanging up.
     """
     logger.info(f"end_call tool invoked: reason={reason}")
     
@@ -44,31 +54,25 @@ async def end_call(context: RunContext, reason: str = "user_farewell") -> str:
     except Exception as e:
         logger.warning(f"end_call: userdata not available: {e}")
     
-    # Get job context to access room
-    ctx = get_job_context()
-    if ctx is None:
-        logger.warning("end_call: no job context available")
-        return "Не удалось завершить звонок."
-    
-    room_name = ctx.room.name if ctx.room else "unknown"
-    logger.info(f"Scheduling hangup for room: {room_name}")
-    
-    # Schedule hangup after delay to allow farewell message to be spoken
-    async def delayed_hangup():
-        await asyncio.sleep(5.0)  # Wait for TTS to finish farewell
+    # Schedule hangup AFTER playout finishes
+    # This runs in background so we return the farewell message first
+    async def hangup_after_playout():
         try:
-            job_ctx = get_job_context()
-            if job_ctx is not None and job_ctx.room:
-                logger.info(f"Executing hangup for room: {job_ctx.room.name}")
-                await job_ctx.api.room.delete_room(
-                    api.DeleteRoomRequest(room=job_ctx.room.name)
-                )
+            # Wait for TTS to finish speaking the farewell message
+            # context.wait_for_playout() is the official way per LiveKit docs
+            logger.info("Waiting for playout to finish...")
+            await context.wait_for_playout()
+            logger.info("Playout finished, hanging up now")
+            
+            # Now hangup
+            await _hangup_call()
         except Exception as e:
-            logger.error(f"Error during hangup: {e}")
+            logger.error(f"Error during hangup: {e}", exc_info=True)
     
-    asyncio.create_task(delayed_hangup())
+    asyncio.create_task(hangup_after_playout())
     
-    return "Попрощайся с пользователем, звонок завершится через несколько секунд."
+    # Return farewell message that will be spoken by TTS
+    return "До свидания! Всего хорошего!"
 
 
 # Export list of tools from this module

@@ -341,6 +341,13 @@ class YandexLLMStream(llm.LLMStream):
             
             if yandex_tools:
                 request_body["tools"] = yandex_tools
+                # Log tools separately for debugging
+                logger.info(f"YandexGPT tools in request: {json.dumps(yandex_tools, ensure_ascii=False)}")
+            else:
+                logger.warning("No tools converted for YandexGPT request!")
+            
+            # Log model URI
+            logger.info(f"YandexGPT modelUri: {request_body['modelUri']}")
             
             async with httpx.AsyncClient(timeout=30.0) as client:
                 # First API call
@@ -399,21 +406,36 @@ class YandexLLMStream(llm.LLMStream):
                     
                     # Process final response
                     alternatives = result_data.get("result", {}).get("alternatives", [])
+                    text_to_speak = None
+                    
                     for alt in alternatives:
                         msg = alt.get("message", {})
+                        alt_status = alt.get("status", "")
                         text = msg.get("text", "")
+                        
                         if text:
-                            # Add "thinking" prefix only if tool execution was slow (>1s)
-                            if execution_time > 1.0:
-                                text = "Секунду, проверяю... " + text
-                                logger.info(f"Added thinking prefix (execution took {execution_time:.2f}s)")
-                            
-                            logger.info(f"Final response: {text[:100]}...")
-                            chunk = ChatChunk(
-                                id=request_id,
-                                delta=ChoiceDelta(role="assistant", content=text),
-                            )
-                            self._event_ch.send_nowait(chunk)
+                            text_to_speak = text
+                        elif alt_status == "ALTERNATIVE_STATUS_TOOL_CALLS":
+                            # Model wants to call tool again - use tool result as response
+                            # This happens with end_call - just speak the farewell
+                            logger.info("Second response is TOOL_CALLS, using tool result as speech")
+                            if tool_results:
+                                # Get the content from first tool result
+                                first_result = tool_results[0].get("functionResult", {})
+                                text_to_speak = first_result.get("content", "")
+                    
+                    if text_to_speak:
+                        # Add "thinking" prefix only if tool execution was slow (>1s)
+                        if execution_time > 1.0:
+                            text_to_speak = "Секунду, проверяю... " + text_to_speak
+                            logger.info(f"Added thinking prefix (execution took {execution_time:.2f}s)")
+                        
+                        logger.info(f"Final response: {text_to_speak[:100]}...")
+                        chunk = ChatChunk(
+                            id=request_id,
+                            delta=ChoiceDelta(role="assistant", content=text_to_speak),
+                        )
+                        self._event_ch.send_nowait(chunk)
                     return
                 
                 # Regular text response (no tool calls)
