@@ -436,21 +436,33 @@ class YandexLLMStream(llm.LLMStream):
                     alternatives = result_data.get("result", {}).get("alternatives", [])
                     text_to_speak = None
                     
-                    for alt in alternatives:
-                        msg = alt.get("message", {})
-                        alt_status = alt.get("status", "")
-                        text = msg.get("text", "")
-                        
-                        if text:
-                            text_to_speak = text
-                        elif alt_status == "ALTERNATIVE_STATUS_TOOL_CALLS":
-                            # Model wants to call tool again - use tool result as response
-                            # This happens with end_call - just speak the farewell
-                            logger.info("Second response is TOOL_CALLS, using tool result as speech")
-                            if tool_results:
-                                # Get the content from first tool result
-                                first_result = tool_results[0].get("functionResult", {})
-                                text_to_speak = first_result.get("content", "")
+                    # Check if end_call was executed - always use its result
+                    end_call_executed = any(
+                        tc.get("functionCall", {}).get("name") == "end_call"
+                        for tc in tool_calls
+                    )
+                    
+                    if end_call_executed and tool_results:
+                        # For end_call, always use the tool result (farewell message)
+                        # Don't let LLM generate additional text like "(Конец разговора)"
+                        logger.info("end_call executed, using tool result directly")
+                        first_result = tool_results[0].get("functionResult", {})
+                        text_to_speak = first_result.get("content", "")
+                    else:
+                        for alt in alternatives:
+                            msg = alt.get("message", {})
+                            alt_status = alt.get("status", "")
+                            text = msg.get("text", "")
+                            
+                            if text:
+                                text_to_speak = text
+                            elif alt_status == "ALTERNATIVE_STATUS_TOOL_CALLS":
+                                # Model wants to call tool again - use tool result as response
+                                logger.info("Second response is TOOL_CALLS, using tool result as speech")
+                                if tool_results:
+                                    # Get the content from first tool result
+                                    first_result = tool_results[0].get("functionResult", {})
+                                    text_to_speak = first_result.get("content", "")
                     
                     if text_to_speak:
                         # Add "thinking" prefix only if tool execution was slow (>1s)

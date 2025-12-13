@@ -78,22 +78,9 @@ async def end_call(context: RunContext, reason: str = "user_farewell") -> str:
     """
     logger.info(f"end_call tool invoked: reason={reason}")
     
-    # Check if call is already ending via userdata
-    try:
-        userdata = context.userdata
-        if userdata and userdata.get("call_ending", False):
-            logger.info("end_call: call already ending")
-            return "Звонок уже завершается."
-        
-        # Mark call as ending
-        if userdata:
-            userdata["call_ending"] = True
-    except Exception as e:
-        logger.warning(f"end_call: userdata not available: {e}")
-    
     # Schedule hangup after delay to allow farewell message to be spoken
     async def delayed_hangup():
-        await asyncio.sleep(4.5)  # Wait for TTS to finish farewell (increased delay)
+        await asyncio.sleep(4.5)  # Wait for TTS to finish farewell
         try:
             await _hangup_via_transfer()
         except Exception as e:

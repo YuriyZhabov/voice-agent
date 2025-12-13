@@ -54,6 +54,9 @@ class LatencyMetrics:
     total_latency_ms: float = 0.0
     turn_count: int = 0
     latencies: list = field(default_factory=list)
+    # Collected metrics to log at end of call
+    pending_metrics: list = field(default_factory=list)
+    pending_events: list = field(default_factory=list)
     
     def start_turn(self):
         self.user_speech_end = time.time()
@@ -67,6 +70,16 @@ class LatencyMetrics:
             self.total_latency_ms = (self.tts_first_audio - self.user_speech_end) * 1000
             self.latencies.append(self.total_latency_ms)
             self.turn_count += 1
+            # Queue metric for later logging
+            self.pending_metrics.append(("ttfw", self.total_latency_ms))
+    
+    def add_metric(self, metric_type: str, value_ms: float):
+        """Queue a metric for batch logging."""
+        self.pending_metrics.append((metric_type, value_ms))
+    
+    def add_event(self, event_type: str, data: dict = None):
+        """Queue an event for batch logging."""
+        self.pending_events.append((event_type, data or {}))
     
     def get_summary(self) -> dict:
         if not self.latencies:
@@ -149,8 +162,85 @@ async def entrypoint(ctx: JobContext):
         agent_version=config.agent_name,
     )
     
-    call_state = {"ending": False}
+    call_state = {"ending": False, "error": False}
     agent_session = None
+    latency_metrics = LatencyMetrics()
+    usage_collector = metrics.UsageCollector()
+    
+    # Register shutdown callback to ensure cleanup runs before process exits
+    async def on_shutdown():
+        """Cleanup callback that runs before process terminates."""
+        nonlocal latency_metrics, usage_collector, call_state
+        
+        logger.log_event("shutdown_callback_started", {})
+        
+        # Collect latency summary
+        latency_summary = latency_metrics.get_summary()
+        logger.log_event("latency_summary", latency_summary)
+        
+        # Collect usage metrics
+        usage_data = {}
+        try:
+            usage = usage_collector.get_summary()
+            usage_data = {
+                "llm_prompt_tokens": usage.llm_prompt_tokens,
+                "llm_completion_tokens": usage.llm_completion_tokens,
+                "llm_total_tokens": usage.llm_prompt_tokens + usage.llm_completion_tokens,
+                "tts_chars": usage.tts_characters_count,
+                "stt_audio_seconds": round(usage.stt_audio_duration, 2),
+            }
+            logger.log_event("usage_summary", usage_data)
+        except Exception as e:
+            logger.log_error(e, context={"phase": "usage_collection"})
+        
+        logger.log_summary()
+        
+        # Batch log all pending metrics to Supabase
+        for metric_type, value_ms in latency_metrics.pending_metrics:
+            try:
+                await log_latency_metric(room_name, metric_type, value_ms)
+            except Exception as e:
+                logger.log_error(e, context={"phase": "metric_logging", "metric": metric_type})
+        
+        # Batch log all pending events to Supabase
+        for event_type, event_data in latency_metrics.pending_events:
+            try:
+                await log_event(room_name, event_type, event_data)
+            except Exception as e:
+                logger.log_error(e, context={"phase": "event_logging", "event": event_type})
+        
+        # Log usage metrics
+        if usage_data.get("llm_total_tokens"):
+            await log_llm_usage(
+                room_name,
+                usage_data.get("llm_prompt_tokens", 0),
+                usage_data.get("llm_completion_tokens", 0),
+            )
+        
+        # Combine all metrics for Supabase
+        call_metrics_data = {
+            **latency_summary,
+            **usage_data,
+        }
+        
+        # Log call end to Supabase with full metrics
+        status = "completed" if not call_state.get("error") else "failed"
+        end_reason = "participant_disconnect"
+        await log_call_end(room_name, status, end_reason=end_reason, metrics=call_metrics_data)
+        
+        # Log final event
+        await log_event(room_name, "call_ended", {
+            "status": status,
+            "end_reason": end_reason,
+            "metrics": call_metrics_data,
+        })
+        
+        # Clear global call_id
+        clear_call_id()
+        
+        logger.log_event("shutdown_callback_completed", {})
+    
+    ctx.add_shutdown_callback(on_shutdown)
     
     async def handle_silence_timeout():
         if call_state["ending"]:
@@ -170,7 +260,6 @@ async def entrypoint(ctx: JobContext):
         logger=logger,
         on_timeout=handle_silence_timeout,
     )
-    latency_metrics = LatencyMetrics()
     
     tools = get_all_tools()
     from agent.tools import _get_tool_name
@@ -220,24 +309,32 @@ async def entrypoint(ctx: JobContext):
             userdata={"call_ending": False, "room_name": room_name},
         )
         
-        @agent_session.on("user_started_speaking")
-        def on_user_started_speaking():
-            silence_monitor.reset()
-            asyncio.create_task(log_event(room_name, "user_started_speaking"))
+        @agent_session.on("user_state_changed")
+        def on_user_state_changed(ev):
+            """Handle user state changes (speaking/listening/away)."""
+            new_state = getattr(ev, 'new_state', None)
+            if new_state:
+                new_state_str = str(new_state).lower()
+                if 'speaking' in new_state_str:
+                    silence_monitor.reset()
+                    asyncio.create_task(log_event(room_name, "user_started_speaking"))
+                elif 'listening' in new_state_str:
+                    latency_metrics.start_turn()
+                    asyncio.create_task(log_event(room_name, "user_stopped_speaking"))
         
-        @agent_session.on("user_stopped_speaking")
-        def on_user_stopped_speaking():
-            latency_metrics.start_turn()
-            asyncio.create_task(log_event(room_name, "user_stopped_speaking"))
-        
-        @agent_session.on("agent_started_speaking")
-        def on_agent_started_speaking():
-            latency_metrics.mark_tts_first_audio()
-            ttfw_ms = round(latency_metrics.total_latency_ms, 1)
-            logger.log_event("turn_latency", {"total_ms": ttfw_ms})
-            # Log TTFW metric to Supabase
-            asyncio.create_task(log_latency_metric(room_name, "ttfw", ttfw_ms))
-            asyncio.create_task(log_event(room_name, "agent_started_speaking", {"ttfw_ms": ttfw_ms}))
+        @agent_session.on("agent_state_changed")
+        def on_agent_state_changed(ev):
+            """Handle agent state changes (listening/thinking/speaking)."""
+            new_state = getattr(ev, 'new_state', None)
+            if new_state:
+                new_state_str = str(new_state).lower()
+                if 'speaking' in new_state_str:
+                    latency_metrics.mark_tts_first_audio()
+                    ttfw_ms = round(latency_metrics.total_latency_ms, 1)
+                    logger.log_event("turn_latency", {"total_ms": ttfw_ms})
+                    # Log metric immediately
+                    asyncio.create_task(log_latency_metric(room_name, "ttfw", ttfw_ms))
+                    asyncio.create_task(log_event(room_name, "agent_started_speaking", {"ttfw_ms": ttfw_ms}))
         
         @agent_session.on("user_input_transcribed")
         def on_user_input_transcribed(transcript):
@@ -252,27 +349,29 @@ async def entrypoint(ctx: JobContext):
             # Log user transcript to Supabase
             asyncio.create_task(log_transcript(room_name, "user", transcript_str, is_final=is_final))
         
-        usage_collector = metrics.UsageCollector()
-        
         @agent_session.on("metrics_collected")
         def on_metrics_collected(ev: MetricsCollectedEvent):
             usage_collector.collect(ev.metrics)
             metrics.log_metrics(ev.metrics)
             
-            # Log detailed metrics to Supabase
+            # Queue detailed metrics for batch logging
             m = ev.metrics
             if hasattr(m, 'stt_duration') and m.stt_duration:
-                asyncio.create_task(log_latency_metric(room_name, "stt_latency", m.stt_duration * 1000))
+                latency_metrics.add_metric("stt_latency", m.stt_duration * 1000)
             if hasattr(m, 'llm_ttft') and m.llm_ttft:
-                asyncio.create_task(log_latency_metric(room_name, "llm_ttft", m.llm_ttft * 1000))
+                latency_metrics.add_metric("llm_ttft", m.llm_ttft * 1000)
             if hasattr(m, 'tts_ttfb') and m.tts_ttfb:
-                asyncio.create_task(log_latency_metric(room_name, "tts_ttfb", m.tts_ttfb * 1000))
+                latency_metrics.add_metric("tts_ttfb", m.tts_ttfb * 1000)
         
         @agent_session.on("error")
         def on_error(error: Exception):
             logger.log_error(error)
-            # Log error to Supabase alerts
-            asyncio.create_task(log_alert("warning", "voice-agent", str(error), call_id=room_name))
+            latency_metrics.add_event("error", {"message": str(error)})
+        
+        @agent_session.on("close")
+        def on_session_close():
+            logger.log_event("session_closed", {})
+            call_state["ending"] = True
         
         await agent_session.start(agent=agent, room=ctx.room)
         logger.log_event("agent_started", {})
@@ -311,46 +410,9 @@ async def entrypoint(ctx: JobContext):
                 pass
         raise
     finally:
+        # Stop silence monitor - cleanup is handled by shutdown callback
         await silence_monitor.stop()
-        latency_summary = latency_metrics.get_summary()
-        logger.log_event("latency_summary", latency_summary)
-        
-        # Collect usage metrics
-        usage_data = {}
-        try:
-            usage = usage_collector.get_summary()
-            usage_data = {
-                "llm_prompt_tokens": usage.llm_prompt_tokens,
-                "llm_completion_tokens": usage.llm_completion_tokens,
-                "llm_total_tokens": usage.llm_prompt_tokens + usage.llm_completion_tokens,
-                "tts_chars": usage.tts_characters_count,
-                "stt_audio_seconds": round(usage.stt_audio_duration, 2),
-            }
-            logger.log_event("usage_summary", usage_data)
-        except Exception:
-            pass
-        logger.log_summary()
-        
-        # Combine all metrics for Supabase
-        call_metrics = {
-            **latency_summary,
-            **usage_data,
-        }
-        
-        # Log call end to Supabase with full metrics
-        status = "completed" if not call_state.get("error") else "failed"
-        end_reason = "user_hangup" if not call_state.get("ending") else "normal"
-        await log_call_end(room_name, status, end_reason=end_reason, metrics=call_metrics)
-        
-        # Log final event
-        await log_event(room_name, "call_ended", {
-            "status": status,
-            "end_reason": end_reason,
-            "metrics": call_metrics,
-        })
-        
-        # Clear global call_id
-        clear_call_id()
+        logger.log_event("finally_block_executed", {})
 
 
 async def hangup_call():
