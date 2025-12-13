@@ -471,6 +471,17 @@ class YandexLLMStream(llm.LLMStream):
                             logger.info(f"Added thinking prefix (execution took {execution_time:.2f}s)")
                         
                         logger.info(f"Final response: {text_to_speak[:100]}...")
+                        
+                        # Log assistant response to Supabase
+                        try:
+                            from agent.supabase_client import log_assistant_response
+                            from agent.context import get_call_id
+                            call_id = get_call_id()
+                            if call_id:
+                                asyncio.create_task(log_assistant_response(call_id, text_to_speak))
+                        except Exception as log_err:
+                            logger.warning(f"Failed to log assistant response: {log_err}")
+                        
                         chunk = ChatChunk(
                             id=request_id,
                             delta=ChoiceDelta(role="assistant", content=text_to_speak),
@@ -483,6 +494,16 @@ class YandexLLMStream(llm.LLMStream):
                 logger.info(f"YandexGPT response: {text[:100] if text else 'empty'}...")
                 
                 if text:
+                    # Log assistant response to Supabase
+                    try:
+                        from agent.supabase_client import log_assistant_response
+                        from agent.context import get_call_id
+                        call_id = get_call_id()
+                        if call_id:
+                            asyncio.create_task(log_assistant_response(call_id, text))
+                    except Exception as log_err:
+                        logger.warning(f"Failed to log assistant response: {log_err}")
+                    
                     chunk = ChatChunk(
                         id=request_id,
                         delta=ChoiceDelta(role="assistant", content=text),
