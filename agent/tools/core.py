@@ -54,22 +54,24 @@ async def end_call(context: RunContext, reason: str = "user_farewell") -> str:
     except Exception as e:
         logger.warning(f"end_call: userdata not available: {e}")
     
-    # Schedule hangup AFTER playout finishes
-    # This runs in background so we return the farewell message first
-    async def hangup_after_playout():
+    # Schedule hangup AFTER TTS finishes speaking
+    # We use a fixed delay because we don't have access to LiveKit's RunContext
+    # (our tools are called from custom YandexGPT LLM, not LiveKit Agent framework)
+    async def hangup_after_delay():
         try:
-            # Wait for TTS to finish speaking the farewell message
-            # context.wait_for_playout() is the official way per LiveKit docs
-            logger.info("Waiting for playout to finish...")
-            await context.wait_for_playout()
-            logger.info("Playout finished, hanging up now")
+            # Wait for TTS to finish speaking "До свидания! Всего хорошего!"
+            # This phrase takes ~2 seconds to speak
+            delay = 2.5
+            logger.info(f"Waiting {delay}s for TTS to finish...")
+            await asyncio.sleep(delay)
+            logger.info("Delay finished, hanging up now")
             
             # Now hangup
             await _hangup_call()
         except Exception as e:
             logger.error(f"Error during hangup: {e}", exc_info=True)
     
-    asyncio.create_task(hangup_after_playout())
+    asyncio.create_task(hangup_after_delay())
     
     # Return farewell message that will be spoken by TTS
     return "До свидания! Всего хорошего!"
