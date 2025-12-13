@@ -3,6 +3,7 @@ import { Layout } from './components/Layout';
 import { Overview } from './views/Overview';
 import { VoiceQuality } from './views/VoiceQuality';
 import { AgentPerformance } from './views/AgentPerformance';
+import { CallHistory } from './views/CallHistory';
 
 // Placeholder views for unfinished sections
 const PlaceholderView = ({ title }: { title: string }) => (
@@ -24,6 +25,8 @@ const App: React.FC = () => {
         return <VoiceQuality />;
       case 'agent-perf':
         return <AgentPerformance />;
+      case 'call-history':
+        return <CallHistory />;
       case 'sip':
         return <PlaceholderView title="Детали SIP Телефонии" />;
       case 'settings':

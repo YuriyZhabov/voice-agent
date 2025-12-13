@@ -10,7 +10,8 @@ import {
   User,
   Menu,
   X,
-  Mic
+  Mic,
+  History
 } from 'lucide-react';
 
 interface LayoutProps {
@@ -85,6 +86,12 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeView, onNavigate
             label="Производительность" 
             active={activeView === 'agent-perf'} 
             onClick={() => { onNavigate('agent-perf'); setSidebarOpen(false); }}
+          />
+          <SidebarItem 
+            icon={History} 
+            label="История звонков" 
+            active={activeView === 'call-history'} 
+            onClick={() => { onNavigate('call-history'); setSidebarOpen(false); }}
           />
           <SidebarItem 
             icon={PhoneCall} 
