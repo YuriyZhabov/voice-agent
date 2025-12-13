@@ -33,7 +33,12 @@ from agent.supabase_client import (
     log_call_start,
     log_call_end,
     log_transcript,
+    log_assistant_response,
     log_tool_execution,
+    log_latency_metric,
+    log_llm_usage,
+    log_event,
+    log_alert,
 )
 
 
@@ -214,23 +219,34 @@ async def entrypoint(ctx: JobContext):
         @agent_session.on("user_started_speaking")
         def on_user_started_speaking():
             silence_monitor.reset()
+            asyncio.create_task(log_event(room_name, "user_started_speaking"))
         
         @agent_session.on("user_stopped_speaking")
         def on_user_stopped_speaking():
             latency_metrics.start_turn()
+            asyncio.create_task(log_event(room_name, "user_stopped_speaking"))
         
         @agent_session.on("agent_started_speaking")
         def on_agent_started_speaking():
             latency_metrics.mark_tts_first_audio()
-            logger.log_event("turn_latency", {"total_ms": round(latency_metrics.total_latency_ms, 1)})
+            ttfw_ms = round(latency_metrics.total_latency_ms, 1)
+            logger.log_event("turn_latency", {"total_ms": ttfw_ms})
+            # Log TTFW metric to Supabase
+            asyncio.create_task(log_latency_metric(room_name, "ttfw", ttfw_ms))
+            asyncio.create_task(log_event(room_name, "agent_started_speaking", {"ttfw_ms": ttfw_ms}))
         
         @agent_session.on("user_input_transcribed")
         def on_user_input_transcribed(transcript):
             silence_monitor.reset()
             latency_metrics.mark_stt_complete()
-            logger.log_event("transcribed", {"text": str(transcript)[:100]})
-            # Log user transcript to Supabase (fire and forget)
-            asyncio.create_task(log_transcript(room_name, "user", str(transcript)))
+            transcript_str = str(transcript)
+            logger.log_event("transcribed", {"text": transcript_str[:100]})
+            
+            # Check if final transcript
+            is_final = "is_final=True" in transcript_str or "is_final=T" in transcript_str
+            
+            # Log user transcript to Supabase
+            asyncio.create_task(log_transcript(room_name, "user", transcript_str, is_final=is_final))
         
         usage_collector = metrics.UsageCollector()
         
@@ -238,13 +254,33 @@ async def entrypoint(ctx: JobContext):
         def on_metrics_collected(ev: MetricsCollectedEvent):
             usage_collector.collect(ev.metrics)
             metrics.log_metrics(ev.metrics)
+            
+            # Log detailed metrics to Supabase
+            m = ev.metrics
+            if hasattr(m, 'stt_duration') and m.stt_duration:
+                asyncio.create_task(log_latency_metric(room_name, "stt_latency", m.stt_duration * 1000))
+            if hasattr(m, 'llm_ttft') and m.llm_ttft:
+                asyncio.create_task(log_latency_metric(room_name, "llm_ttft", m.llm_ttft * 1000))
+            if hasattr(m, 'tts_ttfb') and m.tts_ttfb:
+                asyncio.create_task(log_latency_metric(room_name, "tts_ttfb", m.tts_ttfb * 1000))
         
         @agent_session.on("error")
         def on_error(error: Exception):
             logger.log_error(error)
+            # Log error to Supabase alerts
+            asyncio.create_task(log_alert("warning", "voice-agent", str(error), call_id=room_name))
         
         await agent_session.start(agent=agent, room=ctx.room)
         logger.log_event("agent_started", {})
+        
+        # Log agent started event to Supabase
+        await log_event(room_name, "agent_started", {
+            "stt": "yandex",
+            "tts": "yandex",
+            "llm": "yandex",
+            "model": config.yandex_llm_model,
+            "tools": [_get_tool_name(t) for t in tools],
+        })
         
         await silence_monitor.start()
         
@@ -252,6 +288,9 @@ async def entrypoint(ctx: JobContext):
         await agent_session.generate_reply(
             instructions="Поприветствуй пользователя кратко и спроси чем можешь помочь."
         )
+        
+        # Log greeting
+        await log_assistant_response(room_name, "Здравствуйте! Чем могу помочь?")
         
         while not call_state["ending"]:
             await asyncio.sleep(1.0)
@@ -269,21 +308,42 @@ async def entrypoint(ctx: JobContext):
         raise
     finally:
         await silence_monitor.stop()
-        logger.log_event("latency_summary", latency_metrics.get_summary())
+        latency_summary = latency_metrics.get_summary()
+        logger.log_event("latency_summary", latency_summary)
+        
+        # Collect usage metrics
+        usage_data = {}
         try:
             usage = usage_collector.get_summary()
-            logger.log_event("usage_summary", {
-                "llm_tokens": usage.llm_prompt_tokens + usage.llm_completion_tokens,
+            usage_data = {
+                "llm_prompt_tokens": usage.llm_prompt_tokens,
+                "llm_completion_tokens": usage.llm_completion_tokens,
+                "llm_total_tokens": usage.llm_prompt_tokens + usage.llm_completion_tokens,
                 "tts_chars": usage.tts_characters_count,
-                "stt_audio_s": round(usage.stt_audio_duration, 2),
-            })
+                "stt_audio_seconds": round(usage.stt_audio_duration, 2),
+            }
+            logger.log_event("usage_summary", usage_data)
         except Exception:
             pass
         logger.log_summary()
         
-        # Log call end to Supabase
+        # Combine all metrics for Supabase
+        call_metrics = {
+            **latency_summary,
+            **usage_data,
+        }
+        
+        # Log call end to Supabase with full metrics
         status = "completed" if not call_state.get("error") else "failed"
-        await log_call_end(room_name, status)
+        end_reason = "user_hangup" if not call_state.get("ending") else "normal"
+        await log_call_end(room_name, status, end_reason=end_reason, metrics=call_metrics)
+        
+        # Log final event
+        await log_event(room_name, "call_ended", {
+            "status": status,
+            "end_reason": end_reason,
+            "metrics": call_metrics,
+        })
 
 
 async def hangup_call():
